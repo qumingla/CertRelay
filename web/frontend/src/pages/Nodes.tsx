@@ -37,7 +37,7 @@ export function Nodes() {
     defaultValues: { name: "", certDir: "/etc/nginx/ssl" },
   });
   const renameForm = useForm({
-    defaultValues: { name: "" },
+    defaultValues: { name: "", ip: "", certDir: "/etc/nginx/ssl" },
   });
 
   const createMutation = useMutation({
@@ -52,11 +52,16 @@ export function Nodes() {
   });
 
   const renameMutation = useMutation({
-    mutationFn: ({ id, name }: { id: string; name: string }) => api.patch<CertNode>(`/admin/nodes/${id}`, { name }),
+    mutationFn: (data: { id: string; name: string; ip: string; certDir: string }) =>
+      api.patch<CertNode>(`/admin/nodes/${data.id}`, {
+        name: data.name,
+        ip: data.ip,
+        certDir: data.certDir,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['nodes'] });
       setEditingNode(null);
-      renameForm.reset({ name: "" });
+      renameForm.reset({ name: "", ip: "", certDir: "/etc/nginx/ssl" });
       toast.success(t("nodes.renamed"));
     },
     onError: (err: unknown) => toast.error((err as Error).message || t("nodes.renameFailed"))
@@ -80,20 +85,34 @@ export function Nodes() {
   };
 
   const openRenameDialog = (node: CertNode) => {
-    renameForm.reset({ name: node.name });
+    renameForm.reset({
+      name: node.name,
+      ip: node.ip || "",
+      certDir: node.certDir || "/etc/nginx/ssl",
+    });
     setEditingNode(node);
   };
 
-  const onRenameSubmit = (values: { name: string }) => {
+  const onRenameSubmit = (values: { name: string; ip: string; certDir: string }) => {
     const name = values.name.trim();
+    const certDir = values.certDir.trim();
     if (!name) {
       toast.error(t("nodes.nameRequired"));
+      return;
+    }
+    if (!certDir) {
+      toast.error(t("nodes.certDirRequired"));
       return;
     }
     if (!editingNode) {
       return;
     }
-    renameMutation.mutate({ id: editingNode.id, name });
+    renameMutation.mutate({
+      id: editingNode.id,
+      name,
+      ip: values.ip.trim(),
+      certDir,
+    });
   };
 
   const shellQuote = (value: string) => `'${value.split("'").join(`'"'"'`)}'`;
@@ -331,7 +350,7 @@ export function Nodes() {
       <Dialog open={!!editingNode} onOpenChange={(open) => {
         if (!open) {
           setEditingNode(null);
-          renameForm.reset({ name: "" });
+          renameForm.reset({ name: "", ip: "", certDir: "/etc/nginx/ssl" });
         }
       }}>
         <DialogContent className="w-[calc(100vw-2rem)] max-w-lg max-h-[90vh] overflow-y-auto">
@@ -349,6 +368,23 @@ export function Nodes() {
                   required
                   autoFocus
                   {...renameForm.register('name')}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="rename-node-ip">{t("table.ipAddress")}</Label>
+                <Input
+                  id="rename-node-ip"
+                  placeholder="192.168.1.10"
+                  {...renameForm.register('ip')}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="rename-node-cert-dir">{t("table.certDirectory")}</Label>
+                <Input
+                  id="rename-node-cert-dir"
+                  placeholder="/etc/nginx/ssl"
+                  required
+                  {...renameForm.register('certDir')}
                 />
               </div>
             </div>
