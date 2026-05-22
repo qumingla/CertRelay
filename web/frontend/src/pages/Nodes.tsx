@@ -10,7 +10,7 @@ import { Card, CardContent } from "../components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Plus, Server, Trash, Copy, CheckCircle2, Globe, Folder, TerminalSquare } from "lucide-react";
+import { Plus, Server, Trash, Copy, CheckCircle2, Globe, Folder, TerminalSquare, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { useI18n } from "../components/LocaleProvider";
@@ -19,6 +19,7 @@ export function Nodes() {
   const queryClient = useQueryClient();
   const { t, formatRelative } = useI18n();
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [editingNode, setEditingNode] = useState<CertNode | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [newNodeToken, setNewNodeToken] = useState<string | null>(null);
   const [newNodeCertDir, setNewNodeCertDir] = useState<string>("/etc/nginx/ssl");
@@ -32,8 +33,11 @@ export function Nodes() {
     queryFn: () => api.get('/admin/settings'),
   });
 
-  const form = useForm({
+  const addForm = useForm({
     defaultValues: { name: "", certDir: "/etc/nginx/ssl" },
+  });
+  const renameForm = useForm({
+    defaultValues: { name: "" },
   });
 
   const createMutation = useMutation({
@@ -41,10 +45,21 @@ export function Nodes() {
     onSuccess: (data: { token: string; certDir?: string }) => {
       queryClient.invalidateQueries({ queryKey: ['nodes'] });
       setNewNodeToken(data.token);
-      setNewNodeCertDir(data.certDir || form.getValues("certDir") || "/etc/nginx/ssl");
+      setNewNodeCertDir(data.certDir || addForm.getValues("certDir") || "/etc/nginx/ssl");
       toast.success(t("nodes.added"));
     },
     onError: (err: unknown) => toast.error((err as Error).message || t("nodes.addFailed"))
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => api.patch<CertNode>(`/admin/nodes/${id}`, { name }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['nodes'] });
+      setEditingNode(null);
+      renameForm.reset({ name: "" });
+      toast.success(t("nodes.renamed"));
+    },
+    onError: (err: unknown) => toast.error((err as Error).message || t("nodes.renameFailed"))
   });
 
   const deleteMutation = useMutation({
@@ -58,7 +73,27 @@ export function Nodes() {
   });
 
   const onSubmit = (values: { name: string; certDir: string }) => {
-    createMutation.mutate(values);
+    createMutation.mutate({
+      name: values.name.trim(),
+      certDir: values.certDir.trim() || "/etc/nginx/ssl",
+    });
+  };
+
+  const openRenameDialog = (node: CertNode) => {
+    renameForm.reset({ name: node.name });
+    setEditingNode(node);
+  };
+
+  const onRenameSubmit = (values: { name: string }) => {
+    const name = values.name.trim();
+    if (!name) {
+      toast.error(t("nodes.nameRequired"));
+      return;
+    }
+    if (!editingNode) {
+      return;
+    }
+    renameMutation.mutate({ id: editingNode.id, name });
   };
 
   const shellQuote = (value: string) => `'${value.split("'").join(`'"'"'`)}'`;
@@ -136,7 +171,7 @@ export function Nodes() {
                 <TableHead>{t("table.certDirectory")}</TableHead>
                 <TableHead>{t("table.assigned")}</TableHead>
                 <TableHead>{t("table.lastOnline")}</TableHead>
-                <TableHead className="w-[80px]"></TableHead>
+                <TableHead className="w-[112px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -167,9 +202,14 @@ export function Nodes() {
                       {n.lastHeartbeatAt ? formatRelative(n.lastHeartbeatAt) : t("common.never")}
                     </TableCell>
                     <TableCell>
-                      <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(n.id)}>
-                        <Trash className="h-4 w-4" />
-                      </Button>
+                      <div className="flex justify-end gap-1">
+                        <Button variant="ghost" size="icon" onClick={() => openRenameDialog(n)}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(n.id)}>
+                          <Trash className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -185,14 +225,14 @@ export function Nodes() {
         if (!open) {
           setNewNodeToken(null);
           setNewNodeCertDir("/etc/nginx/ssl");
-          form.reset();
+          addForm.reset();
         }
       }}>
         <DialogContent className={newNodeToken
           ? "w-[calc(100vw-2rem)] sm:max-w-3xl max-h-[90vh] overflow-y-auto p-0"
           : "w-[calc(100vw-2rem)] sm:max-w-lg max-h-[90vh] overflow-y-auto p-0"}>
           {!newNodeToken ? (
-            <form onSubmit={form.handleSubmit(onSubmit)} className="p-4 sm:p-6">
+            <form onSubmit={addForm.handleSubmit(onSubmit)} className="p-4 sm:p-6">
               <DialogHeader>
                 <DialogTitle>{t("nodes.addTitle")}</DialogTitle>
                 <DialogDescription>{t("nodes.addDescription")}</DialogDescription>
@@ -200,11 +240,11 @@ export function Nodes() {
               <div className="grid gap-4 py-4">
                 <div className="grid gap-2">
                   <Label htmlFor="name">{t("nodes.nodeName")}</Label>
-                  <Input id="name" placeholder={t("nodes.nodePlaceholder")} required {...form.register('name')} />
+                  <Input id="name" placeholder={t("nodes.nodePlaceholder")} required {...addForm.register('name')} />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="certDir">{t("table.certDirectory")}</Label>
-                  <Input id="certDir" placeholder="/etc/nginx/ssl" required {...form.register('certDir')} />
+                  <Input id="certDir" placeholder="/etc/nginx/ssl" required {...addForm.register('certDir')} />
                 </div>
               </div>
               <DialogFooter>
@@ -285,6 +325,42 @@ export function Nodes() {
               </div>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editingNode} onOpenChange={(open) => {
+        if (!open) {
+          setEditingNode(null);
+          renameForm.reset({ name: "" });
+        }
+      }}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-lg max-h-[90vh] overflow-y-auto">
+          <form onSubmit={renameForm.handleSubmit(onRenameSubmit)}>
+            <DialogHeader>
+              <DialogTitle>{t("nodes.renameTitle")}</DialogTitle>
+              <DialogDescription>{t("nodes.renameDescription")}</DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+              <div className="grid gap-2">
+                <Label htmlFor="rename-node-name">{t("nodes.nodeName")}</Label>
+                <Input
+                  id="rename-node-name"
+                  placeholder={t("nodes.nodePlaceholder")}
+                  required
+                  autoFocus
+                  {...renameForm.register('name')}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" type="button" onClick={() => setEditingNode(null)}>
+                {t("common.cancel")}
+              </Button>
+              <Button type="submit" disabled={renameMutation.isPending}>
+                {renameMutation.isPending ? t("common.saving") : t("common.save")}
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
