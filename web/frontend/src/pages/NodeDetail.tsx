@@ -412,9 +412,9 @@ export function NodeDetail() {
                   </div>
                   {domains.map(d => (
                     <div key={d.id} className="flex items-center space-x-3">
-                      <input 
-                        type="checkbox" 
-                        id={`domain-${d.id}`} 
+                      <input
+                        type="checkbox"
+                        id={`domain-${d.id}`}
                         value={d.id}
                         {...form.register('domainIds')}
                         className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
