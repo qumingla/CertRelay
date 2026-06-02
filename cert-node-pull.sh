@@ -43,7 +43,10 @@ if ! declare -p DOMAINS >/dev/null 2>&1; then
     DOMAINS=()
 fi
 
-: "${WEBDAV_URL:?}" "${WEBDAV_AUTH:?}"
+WEBDAV_URL="${WEBDAV_URL:-}"
+WEBDAV_AUTH="${WEBDAV_AUTH:-}"
+MASTER_URL="${MASTER_URL:-}"
+NODE_TOKEN="${NODE_TOKEN:-}"
 TELEGRAM_ENABLED="${TELEGRAM_ENABLED:-1}"
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
 TG_CHAT_ID="${TG_CHAT_ID:-}"
@@ -58,6 +61,14 @@ if [[ ${#DOMAINS[@]} -eq 0 ]]; then
     echo "[FATAL] DOMAINS 数组为空" >&2
     exit 1
 fi
+
+if [[ ( -z "${WEBDAV_URL}" || -z "${WEBDAV_AUTH}" ) && ( -z "${MASTER_URL}" || -z "${NODE_TOKEN}" ) ]]; then
+    echo "[FATAL] 未配置可用的证书拉取来源（需要 WebDAV 或 Master API）" >&2
+    exit 1
+fi
+
+MASTER_URL="${MASTER_URL%/}"
+MASTER_CERT_API_BASE="${MASTER_URL}/api/node/v1/certificates"
 
 # ── 1. 日志 ───────────────────────────────────────────────────────────────────
 log() {
@@ -148,7 +159,7 @@ send_tg_msg() {
 }
 
 # ── 3. 下载单个文件（WebDAV GET）─────────────────────────────────────────────
-fetch_file() {
+fetch_file_via_webdav() {
     local remote_subpath="$1"; local local_path="$2"
     local http_code
     http_code=$(curl -s -L -o "${local_path}" -w "%{http_code}" \
@@ -159,6 +170,87 @@ fetch_file() {
     else
         log "ERROR" "❌ 下载失败 (HTTP ${http_code}): ${remote_subpath}"; return 1
     fi
+}
+
+fetch_sha_via_master() {
+    local domain="$1"; local local_path="$2"
+    local http_code
+    http_code="$(curl -sS -L -o "${local_path}" -w "%{http_code}" \
+        --max-time 60 --retry 3 --retry-delay 5 --retry-connrefused \
+        -H "Authorization: Bearer ${NODE_TOKEN}" \
+        "${MASTER_CERT_API_BASE}/${domain}/sha256")"
+    if [[ "${http_code}" == "200" ]]; then
+        log "INFO" "✅ 通过 Master API 获取 SHA256 成功: ${domain}"
+        return 0
+    fi
+    log "ERROR" "❌ 通过 Master API 获取 SHA256 失败 (HTTP ${http_code}): ${domain}"
+    return 1
+}
+
+fetch_bundle_via_master() {
+    local domain="$1"; local tmp_dir="$2"
+    local bundle_path="${tmp_dir}/bundle.tar.gz"
+    local http_code
+    http_code="$(curl -sS -L -o "${bundle_path}" -w "%{http_code}" \
+        --max-time 120 --retry 3 --retry-delay 5 --retry-connrefused \
+        -H "Authorization: Bearer ${NODE_TOKEN}" \
+        "${MASTER_CERT_API_BASE}/${domain}/bundle")"
+    if [[ "${http_code}" != "200" ]]; then
+        log "ERROR" "❌ 通过 Master API 获取证书包失败 (HTTP ${http_code}): ${domain}"
+        return 1
+    fi
+    if ! tar -xzf "${bundle_path}" -C "${tmp_dir}"; then
+        log "ERROR" "❌ Master 证书包解压失败: ${domain}"
+        return 1
+    fi
+    if [[ ! -f "${tmp_dir}/fullchain.pem" || ! -f "${tmp_dir}/privkey.pem" ]]; then
+        log "ERROR" "❌ Master 证书包内容不完整: ${domain}"
+        return 1
+    fi
+    log "INFO" "✅ 通过 Master API 获取证书包成功: ${domain}"
+    return 0
+}
+
+fetch_remote_sha256() {
+    local domain="$1"; local local_path="$2"
+
+    if [[ -n "${WEBDAV_URL}" && -n "${WEBDAV_AUTH}" ]]; then
+        if fetch_file_via_webdav "${domain}/${domain}.sha256" "${local_path}"; then
+            return 0
+        fi
+        if [[ -n "${MASTER_URL}" && -n "${NODE_TOKEN}" ]]; then
+            log "WARN" "[${domain}] WebDAV SHA256 拉取失败，回退到 Master API"
+        fi
+    fi
+
+    if [[ -n "${MASTER_URL}" && -n "${NODE_TOKEN}" ]]; then
+        fetch_sha_via_master "${domain}" "${local_path}"
+        return $?
+    fi
+    return 1
+}
+
+fetch_cert_files() {
+    local domain="$1"; local tmp_dir="$2"
+
+    if [[ -n "${WEBDAV_URL}" && -n "${WEBDAV_AUTH}" ]]; then
+        local failed=0
+        fetch_file_via_webdav "${domain}/${domain}.cer" "${tmp_dir}/fullchain.pem" || failed=1
+        fetch_file_via_webdav "${domain}/${domain}.key" "${tmp_dir}/privkey.pem" || failed=1
+        if [[ ${failed} -eq 0 ]]; then
+            return 0
+        fi
+        rm -f "${tmp_dir}/fullchain.pem" "${tmp_dir}/privkey.pem"
+        if [[ -n "${MASTER_URL}" && -n "${NODE_TOKEN}" ]]; then
+            log "WARN" "[${domain}] WebDAV 证书下载失败，回退到 Master API"
+        fi
+    fi
+
+    if [[ -n "${MASTER_URL}" && -n "${NODE_TOKEN}" ]]; then
+        fetch_bundle_via_master "${domain}" "${tmp_dir}"
+        return $?
+    fi
+    return 1
 }
 
 # ── 4. 清理单个域名的临时文件 ─────────────────────────────────────────────────
@@ -186,9 +278,9 @@ process_domain() {
 
     # 5a. 预检：拉取远程 SHA256
     local remote_sha256_tmp="${tmp_dir}/remote.sha256"
-    if ! fetch_file "${domain}/${domain}.sha256" "${remote_sha256_tmp}"; then
+    if ! fetch_remote_sha256 "${domain}" "${remote_sha256_tmp}"; then
         send_tg_msg "🚨 [ERROR] [${NODE_NAME}] 无法获取 SHA256: ${domain}" \
-            "URL: ${WEBDAV_URL}/${domain}/cert.sha256"
+            "请检查 WebDAV 或 Master API 拉取通道可用性"
         cleanup_tmp "${tmp_dir}"
         return 1
     fi
@@ -208,12 +300,9 @@ process_domain() {
     fi
 
     # 5c. 下载证书文件
-    local failed=0
-    fetch_file "${domain}/${domain}.cer" "${tmp_dir}/fullchain.pem" || failed=1
-    fetch_file "${domain}/${domain}.key" "${tmp_dir}/privkey.pem"   || failed=1
-    if [[ ${failed} -eq 1 ]]; then
+    if ! fetch_cert_files "${domain}" "${tmp_dir}"; then
         send_tg_msg "🚨 [ERROR] [${NODE_NAME}] 证书下载失败: ${domain}" \
-            "请检查 OpenList 可用性"
+            "请检查 WebDAV 或 Master API 拉取通道可用性"
         cleanup_tmp "${tmp_dir}"; return 1
     fi
 

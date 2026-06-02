@@ -1,14 +1,17 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../components/AuthProvider";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { Server } from "lucide-react";
 import { useI18n } from "../components/LocaleProvider";
+import { ApiClientError, api } from "../lib/api";
 
 export function Login() {
   const { login } = useAuth();
   const { t } = useI18n();
+  const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -20,24 +23,22 @@ export function Login() {
     setError("");
 
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_BASE_URL || '/api'}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-      });
-
-      if (!res.ok) {
-        throw new Error(t("login.invalidCredentials"));
-      }
-
-      const data = await res.json();
+      const data = await api.post<{ token: string }>("/auth/login", { username, password });
       if (data.token) {
         login(data.token);
       } else {
         throw new Error(t("login.invalidToken"));
       }
     } catch (err: unknown) {
-      setError((err as Error).message || t("login.failed"));
+      if (err instanceof ApiClientError && err.status === 409 && err.data?.setupRequired === true) {
+        navigate("/setup", { replace: true });
+        return;
+      }
+      if (err instanceof ApiClientError && err.status === 401) {
+        setError(t("login.invalidCredentials"));
+      } else {
+        setError(err instanceof ApiClientError ? err.message : (err as Error).message || t("login.failed"));
+      }
       if (import.meta.env.DEV && import.meta.env.VITE_USE_MOCKS !== 'true') {
         console.warn('Falling back to dummy token in dev mode due to missing API');
         login('dummy_dev_token');

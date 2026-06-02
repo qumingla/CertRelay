@@ -249,6 +249,8 @@ write_runtime_config_for_domains() {
         printf ")\n"
         printf "WEBDAV_URL=%s\n" "$(shell_quote "${WEBDAV_URL}")"
         printf "WEBDAV_AUTH=%s\n" "$(shell_quote "${WEBDAV_AUTH}")"
+        printf "MASTER_URL=%s\n" "$(shell_quote "${MASTER_URL}")"
+        printf "NODE_TOKEN=%s\n" "$(shell_quote "${NODE_TOKEN}")"
         printf "CERT_BASE_DIR=%s\n" "$(shell_quote "${CERT_BASE_DIR}")"
         printf "TMP_BASE=%s\n" "$(shell_quote "${TMP_BASE}")"
         printf "TELEGRAM_ENABLED='0'\n"

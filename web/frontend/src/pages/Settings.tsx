@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { BackupPayload, Settings as SettingsType } from "../types/api";
+import type { AuthAccount, BackupPayload, Settings as SettingsType } from "../types/api";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "../components/ui/card";
 import { Input } from "../components/ui/input";
@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { toast } from "sonner";
 import { useForm, useWatch } from "react-hook-form";
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { Save, Bell, HardDrive, Terminal, Languages, Download, Upload } from "lucide-react";
+import { Save, Bell, HardDrive, Terminal, Languages, Download, Upload, Shield } from "lucide-react";
 import { type Language, useI18n } from "../components/LocaleProvider";
 
 export function Settings() {
@@ -18,10 +18,18 @@ export function Settings() {
   const { language, setLanguage, t } = useI18n();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingRestore, setPendingRestore] = useState<{ fileName: string; payload: BackupPayload } | null>(null);
+  const [accountUsernameDraft, setAccountUsernameDraft] = useState<string | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
 
   const { data: settings, isLoading } = useQuery<SettingsType>({
     queryKey: ['settings'],
     queryFn: () => api.get('/admin/settings'),
+  });
+  const { data: account } = useQuery<AuthAccount>({
+    queryKey: ['auth-account'],
+    queryFn: () => api.get('/auth/account'),
   });
 
   const form = useForm<SettingsType>({
@@ -71,6 +79,18 @@ export function Settings() {
       setPendingRestore(null);
     },
     onError: (err: unknown) => toast.error(t("settings.restoreFailed", { message: (err as Error).message }))
+  });
+  const updateAccountMutation = useMutation({
+    mutationFn: (payload: { username: string; currentPassword: string; newPassword: string }) => api.patch<AuthAccount>('/auth/account', payload),
+    onSuccess: async (data) => {
+      setAccountUsernameDraft(data.username);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmNewPassword("");
+      await queryClient.invalidateQueries({ queryKey: ['auth-account'] });
+      toast.success(t("settings.accountUpdated"));
+    },
+    onError: (err: unknown) => toast.error(t("settings.accountUpdateFailed", { message: (err as Error).message })),
   });
 
   const onSubmit = (values: SettingsType) => {
@@ -142,6 +162,24 @@ export function Settings() {
 
   if (isLoading) return <div className="p-8">{t("common.loading")}</div>;
 
+  const accountUsername = accountUsernameDraft ?? account?.username ?? "";
+
+  const submitAccountUpdate = () => {
+    if (newPassword !== confirmNewPassword) {
+      toast.error(t("settings.accountPasswordMismatch"));
+      return;
+    }
+    if (account && accountUsername.trim() === account.username && !newPassword) {
+      toast.error(t("settings.accountNoChanges"));
+      return;
+    }
+    updateAccountMutation.mutate({
+      username: accountUsername.trim(),
+      currentPassword,
+      newPassword,
+    });
+  };
+
   return (
     <div className="p-4 sm:p-6 w-full max-w-4xl overflow-x-hidden space-y-4 sm:space-y-6">
       <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
@@ -175,6 +213,60 @@ export function Settings() {
             <p className="text-sm text-muted-foreground">{t("settings.nodePublicBaseUrlDescription")}</p>
           </div>
         </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5" /> {t("settings.account")}</CardTitle>
+          <CardDescription>{t("settings.accountDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="grid gap-2">
+              <Label htmlFor="account.username">{t("settings.currentUsername")}</Label>
+              <Input
+                id="account.username"
+                value={accountUsername}
+                onChange={(e) => setAccountUsernameDraft(e.target.value)}
+                autoComplete="username"
+              />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="account.currentPassword">{t("settings.currentPassword")}</Label>
+            <Input
+              id="account.currentPassword"
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="account.newPassword">{t("settings.newPassword")}</Label>
+            <Input
+              id="account.newPassword"
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="account.confirmNewPassword">{t("settings.confirmNewPassword")}</Label>
+            <Input
+              id="account.confirmNewPassword"
+              type="password"
+              value={confirmNewPassword}
+              onChange={(e) => setConfirmNewPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+            <p className="text-sm text-muted-foreground">{t("settings.newPasswordHint")}</p>
+          </div>
+        </CardContent>
+        <CardFooter className="flex justify-end">
+          <Button className="w-full sm:w-auto" type="button" onClick={submitAccountUpdate} disabled={updateAccountMutation.isPending}>
+            <Save className="mr-2 h-4 w-4" /> {updateAccountMutation.isPending ? t("common.saving") : t("settings.updateAccount")}
+          </Button>
+        </CardFooter>
       </Card>
 
       <Card>

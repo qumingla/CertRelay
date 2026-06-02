@@ -386,13 +386,14 @@ async def create_node(payload: NodeCreate, db: Database = Depends(get_db)) -> di
     now = iso_now()
     node_id = f"n_{uuid4().hex}"
     token = new_node_token()
+    node_name = _normalize_node_name(payload.name)
     db.execute(
         """
         INSERT INTO nodes
             (id, name, ip, is_online, cert_dir, token_hash, created_at, updated_at)
         VALUES (?, ?, ?, 0, ?, ?, ?, ?)
         """,
-        (node_id, payload.name, payload.ip, payload.certDir, hash_secret(token), now, now),
+        (node_id, node_name, payload.ip, payload.certDir, hash_secret(token), now, now),
     )
     node = _require_node(db, node_id)
     node["token"] = token
@@ -414,6 +415,8 @@ async def patch_node(node_id: str, payload: NodePatch, db: Database = Depends(ge
     for field, column in (("name", "name"), ("ip", "ip"), ("certDir", "cert_dir"), ("lastError", "last_error")):
         value = getattr(payload, field)
         if value is not None:
+            if field == "name":
+                value = _normalize_node_name(value)
             updates.append(f"{column} = ?")
             params.append(value)
     if updates:
@@ -949,6 +952,13 @@ def _require_domain(db: Database, domain_id: str) -> dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Domain not found"})
     return public_domain(row)
+
+
+def _normalize_node_name(value: str) -> str:
+    name = str(value).strip()
+    if not name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": "Node name cannot be empty"})
+    return name
 
 
 def _require_dns_channel(db: Database, channel_id: str) -> dict[str, Any]:

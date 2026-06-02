@@ -90,7 +90,7 @@ export function DnsChannels() {
           Object.entries(data.credentials).map(([key, value]) => [key, value.trim()]).filter(([, value]) => value !== '')
         );
       }
-      
+
       if (data.id) return api.patch(`/admin/dns-channels/${data.id}`, payload);
       return api.post('/admin/dns-channels', payload);
     },
@@ -156,7 +156,7 @@ export function DnsChannels() {
   const openEdit = (c: DnsChannel) => {
     const isCustom = c.provider === 'custom';
     const cFields = isCustom ? Object.keys(c.credentials).map((k) => ({ key: k, value: '' })) : [];
-    
+
     // For non-custom, we don't load the masked values into the form inputs to avoid sending '***' back
     const creds: Record<string, string> = {};
     if (!isCustom) {
@@ -256,11 +256,11 @@ export function DnsChannels() {
                   </SelectContent>
                 </Select>
               </div>
-              
+
               <div className="p-4 bg-muted/50 rounded-md space-y-4 mt-2 border">
                 <p className="text-sm font-medium">{t("dns.credentialsFor", { provider: selectedProviderInfo.name })}</p>
                 {form.getValues('id') && <p className="text-xs text-muted-foreground">{t("dns.keepExisting")}</p>}
-                
+
                 {provider !== 'custom' ? (
                   selectedProviderInfo.fields.map((field: ProviderField) => (
                     <div key={field.name} className="grid gap-2">
@@ -268,12 +268,12 @@ export function DnsChannels() {
                         {field.name}
                         {field.optional ? ` (${t("common.optional")})` : ''}
                       </Label>
-                      <Input 
-                        id={field.name} 
-                        type="password" 
+                      <Input
+                        id={field.name}
+                        type="password"
                         required={!form.getValues('id') && (field.requiredOnCreate ?? !field.optional)}
                         placeholder={form.getValues('id') ? "********" : ""}
-                        {...form.register(`credentials.${field.name}`)} 
+                        {...form.register(`credentials.${field.name}`)}
                       />
                       {field.hintKey ? <p className="text-xs text-muted-foreground">{t(field.hintKey)}</p> : null}
                     </div>

@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
+from .security import hash_password
 from .timeutil import iso_now
 
 
@@ -29,6 +30,16 @@ DEFAULT_SETTINGS = {
     },
 }
 
+DEFAULT_AUTH_STATE = {
+    "initialized": False,
+    "username": "",
+    "passwordHash": "",
+    "createdAt": None,
+    "updatedAt": None,
+}
+
+PLACEHOLDER_ADMIN_PASSWORDS = {"", "admin", "change-this", "change-me-before-production"}
+
 
 class Database:
     def __init__(self, path: Path):
@@ -41,7 +52,7 @@ class Database:
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
-    def init(self) -> None:
+    def init(self, admin_username: str = "admin", admin_password: str = "admin") -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
             existing = conn.execute("SELECT value FROM app_settings WHERE key = 'settings'").fetchone()
@@ -57,6 +68,22 @@ class Database:
                     conn.execute(
                         "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'settings'",
                         (serialized, iso_now()),
+                    )
+
+            existing_auth = conn.execute("SELECT value FROM app_settings WHERE key = 'auth'").fetchone()
+            if existing_auth is None:
+                auth_value = _initial_auth_state(conn, admin_username, admin_password)
+                conn.execute(
+                    "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                    ("auth", dumps(auth_value), iso_now()),
+                )
+            else:
+                merged_auth = merged_auth_state(existing_auth["value"])
+                serialized_auth = dumps(merged_auth)
+                if serialized_auth != existing_auth["value"]:
+                    conn.execute(
+                        "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'auth'",
+                        (serialized_auth, iso_now()),
                     )
 
     def query_all(self, sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
@@ -91,6 +118,39 @@ def loads_object(value: str | None) -> dict[str, Any]:
 
 def merged_settings(value: str | None) -> dict[str, Any]:
     return _merge_defaults(DEFAULT_SETTINGS, loads_object(value))
+
+
+def merged_auth_state(value: str | None) -> dict[str, Any]:
+    return _merge_defaults(DEFAULT_AUTH_STATE, loads_object(value))
+
+
+def _initial_auth_state(conn: sqlite3.Connection, admin_username: str, admin_password: str) -> dict[str, Any]:
+    if _has_existing_runtime_data(conn) or _should_seed_admin_from_config(admin_password):
+        return _build_auth_state(admin_username, admin_password)
+    return dict(DEFAULT_AUTH_STATE)
+
+
+def _has_existing_runtime_data(conn: sqlite3.Connection) -> bool:
+    for table in ("dns_channels", "domains", "nodes", "jobs", "events"):
+        row = conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+        if row is not None:
+            return True
+    return False
+
+
+def _should_seed_admin_from_config(admin_password: str) -> bool:
+    return admin_password.strip() not in PLACEHOLDER_ADMIN_PASSWORDS
+
+
+def _build_auth_state(username: str, password: str) -> dict[str, Any]:
+    now = iso_now()
+    return {
+        "initialized": True,
+        "username": username.strip(),
+        "passwordHash": hash_password(password),
+        "createdAt": now,
+        "updatedAt": now,
+    }
 
 
 def _merge_defaults(defaults: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:

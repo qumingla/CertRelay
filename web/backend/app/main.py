@@ -21,7 +21,7 @@ def create_app() -> FastAPI:
     config.runtime_tmp_dir.mkdir(parents=True, exist_ok=True)
 
     db = Database(config.db_path)
-    db.init()
+    db.init(config.admin_username, config.admin_password)
 
     app = FastAPI(
         title="SSL Certificate Sync Master API",

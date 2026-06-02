@@ -15,6 +15,7 @@
 
 ## 当前前端能力
 
+- 首次安装初始化向导
 - Dashboard 总览与实时事件流
 - 域名管理
   - 搜索
@@ -34,6 +35,7 @@
   - 日志查看与复制
 - 系统设置
   - WebDAV / Telegram / ACME
+  - 管理员账号密码修改
   - 中英文切换
   - 配置下载备份 / 上传恢复
 
@@ -49,6 +51,8 @@ VITE_USE_MOCKS=true npm run dev
 
 Mock 模式会拦截 `/api` 请求，提供完整的前端联调能力，不依赖后端服务。
 
+首次打开 Mock 模式时也会进入初始化向导；初始化状态会保存在浏览器 `localStorage` 中。
+
 默认开发地址：
 
 ```text
@@ -60,13 +64,13 @@ http://127.0.0.1:5173
 ```bash
 cd web/frontend
 npm install
-VITE_API_BASE_URL=/api npm run dev
+VITE_API_BASE_URL=http://127.0.0.1:8080/api npm run dev
 ```
 
 常用环境变量：
 
 ```env
-VITE_API_BASE_URL=/api
+VITE_API_BASE_URL=http://127.0.0.1:8080/api
 VITE_USE_MOCKS=false
 ```
 
@@ -89,6 +93,7 @@ npm run build
 ## 说明
 
 - 本项目使用了较多受控 `Select`、弹窗、批量操作交互，合并前建议至少手动过一遍：
+  - 首次安装向导 / 登录跳转
   - 域名页筛选器
   - 节点分配弹窗
   - 节点注册成功弹窗

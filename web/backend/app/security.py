@@ -6,12 +6,13 @@ import hmac
 import json
 import secrets
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Header, HTTPException, Query, Request, status
 
 from .config import AppConfig
-from .db import Database
+if TYPE_CHECKING:
+    from .db import Database
 
 
 def _b64_encode(raw: bytes) -> str:
@@ -66,6 +67,28 @@ def verify_signed_token(config: AppConfig, token: str, kind: str | None = None) 
 
 def hash_secret(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def hash_password(raw: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(raw.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
+    return f"scrypt${_b64_encode(salt)}${_b64_encode(digest)}"
+
+
+def verify_password_hash(stored: str, raw: str) -> bool:
+    try:
+        scheme, salt_encoded, digest_encoded = stored.split("$", 2)
+    except ValueError:
+        return False
+    if scheme != "scrypt":
+        return False
+    try:
+        salt = _b64_decode(salt_encoded)
+        expected = _b64_decode(digest_encoded)
+    except Exception:
+        return False
+    actual = hashlib.scrypt(raw.encode("utf-8"), salt=salt, n=2**14, r=8, p=1, dklen=len(expected))
+    return hmac.compare_digest(actual, expected)
 
 
 def new_node_token() -> str:

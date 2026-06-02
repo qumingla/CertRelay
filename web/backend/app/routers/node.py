@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import io
+import tarfile
+import time
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
 from ..db import Database, loads_object, merged_settings
 from ..deps import get_db, get_event_hub
 from ..events import EventHub
 from ..jobs import append_log, finish_job
+from ..live_ops import cleanup_bundle, extract_domain_bundle
 from ..schemas import NodeCommandAck, NodeHeartbeat, NodeReport
 from ..security import require_node
 from ..serializers import public_assignment
@@ -109,6 +114,50 @@ async def commands(node: dict[str, Any] = Depends(require_node), db: Database = 
             for row in rows
         ],
     }
+
+
+@router.get("/certificates/{domain}/sha256")
+async def certificate_sha256(
+    domain: str,
+    node: dict[str, Any] = Depends(require_node),
+    db: Database = Depends(get_db),
+) -> PlainTextResponse:
+    assigned_domain = _assigned_domain_for_node(db, node["id"], domain)
+    sha256 = str(assigned_domain.get("cert_sha256") or "").strip()
+    if not sha256:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Certificate SHA256 is not available"})
+    return PlainTextResponse(f"{sha256}\n", media_type="text/plain; charset=utf-8")
+
+
+@router.get("/certificates/{domain}/bundle")
+async def certificate_bundle(
+    domain: str,
+    request: Request,
+    node: dict[str, Any] = Depends(require_node),
+    db: Database = Depends(get_db),
+) -> Response:
+    assigned_domain = _assigned_domain_for_node(db, node["id"], domain)
+    settings_row = db.query_one("SELECT value FROM app_settings WHERE key = 'settings'")
+    settings = merged_settings(settings_row["value"] if settings_row else "{}")
+    config = request.app.state.config
+
+    bundle = None
+    try:
+        bundle = extract_domain_bundle(config, settings, assigned_domain["domain"])
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            _add_bytes_to_archive(archive, "fullchain.pem", bundle.chain_file.read_bytes())
+            _add_bytes_to_archive(archive, "privkey.pem", bundle.key_file.read_bytes())
+            _add_bytes_to_archive(archive, "cert.sha256", f"{bundle.sha256}\n".encode("utf-8"))
+        payload = buffer.getvalue()
+    finally:
+        cleanup_bundle(bundle)
+
+    return Response(
+        content=payload,
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{domain}.tar.gz"'},
+    )
 
 
 @router.post("/reports")
@@ -363,6 +412,29 @@ echo "[INFO] Follow logs with: journalctl -u cert-puller -f"
 
 def _shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _assigned_domain_for_node(db: Database, node_id: str, domain: str) -> dict[str, Any]:
+    row = db.query_one(
+        """
+        SELECT d.*
+        FROM domains d
+        JOIN node_assignments a ON a.domain_id = d.id
+        WHERE a.node_id = ? AND d.domain = ?
+        """,
+        (node_id, domain),
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Domain is not assigned to this node"})
+    return row
+
+
+def _add_bytes_to_archive(archive: tarfile.TarFile, name: str, payload: bytes) -> None:
+    info = tarfile.TarInfo(name=name)
+    info.size = len(payload)
+    info.mode = 0o600
+    info.mtime = int(time.time())
+    archive.addfile(info, io.BytesIO(payload))
 
 
 async def _notify_node_command_result(
