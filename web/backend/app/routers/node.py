@@ -373,9 +373,10 @@ TOKEN=""
 MASTER_URL={master_url_literal}
 CERT_DIR="/etc/ssl/certs/acme"
 CONFIG_FILE="/etc/default/cert-node"
+PRESERVE_CONFIG=0
 
 usage() {{
-    echo "Usage: bash -s -- --token <node-token> [--master-url <url>] [--cert-dir <path>]" >&2
+    echo "Usage: bash -s -- --token <node-token> [--master-url <url>] [--cert-dir <path>] [--preserve-config]" >&2
 }}
 
 while [[ $# -gt 0 ]]; do
@@ -391,6 +392,10 @@ while [[ $# -gt 0 ]]; do
         --cert-dir)
             CERT_DIR="${{2:-}}"
             shift 2
+            ;;
+        --preserve-config)
+            PRESERVE_CONFIG=1
+            shift
             ;;
         -h|--help)
             usage
@@ -444,6 +449,7 @@ if [[ -f "${{CONFIG_FILE}}" ]]; then
     cp "${{CONFIG_FILE}}" "${{CONFIG_FILE}}.bak.$(date '+%Y%m%d_%H%M%S')"
 fi
 
+if [[ "${{PRESERVE_CONFIG}}" != "1" || ! -f "${{CONFIG_FILE}}" ]]; then
 cat > "${{CONFIG_FILE}}" <<EOF_SSL_SYNC_NODE_CONFIG
 MASTER_URL='${{MASTER_URL}}'
 NODE_TOKEN='${{TOKEN}}'
@@ -462,6 +468,9 @@ WEBDAV_URL=''
 WEBDAV_AUTH=''
 EOF_SSL_SYNC_NODE_CONFIG
 chmod 600 "${{CONFIG_FILE}}"
+else
+    echo "[INFO] Existing node config preserved: ${{CONFIG_FILE}}"
+fi
 
 install -m 640 /dev/null /var/log/cert-node-pull.log
 systemctl daemon-reload

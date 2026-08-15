@@ -452,6 +452,10 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
         return createResponse({ success: true });
       }
     }
+    const rotateNodeTokenMatch = url.match(/\/api\/admin\/nodes\/([^/]+)\/rotate-token$/);
+    if (rotateNodeTokenMatch && method === 'POST') {
+      return createResponse({ token: `eyMigratedToken_${rotateNodeTokenMatch[1]}_${Date.now()}` });
+    }
     const nodeAssignmentsMatch = url.match(/\/api\/admin\/nodes\/([^/]+)\/assignments$/);
     if (nodeAssignmentsMatch && method === 'PUT') {
       const id = nodeAssignmentsMatch[1];

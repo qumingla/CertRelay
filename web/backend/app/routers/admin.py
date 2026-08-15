@@ -407,6 +407,30 @@ async def get_node(node_id: str, request: Request, db: Database = Depends(get_db
     return _node_detail(db, event_hub, node_id, request.app.state.config)
 
 
+@router.post("/nodes/{node_id}/rotate-token")
+async def rotate_node_token(
+    node_id: str,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, str]:
+    row = db.query_one("SELECT * FROM nodes WHERE id = ?", (node_id,))
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
+    token = new_node_token()
+    now = iso_now()
+    db.execute(
+        "UPDATE nodes SET token_hash = ?, updated_at = ? WHERE id = ?",
+        (hash_secret(token), now, node_id),
+    )
+    event_hub.publish(
+        "node_token_rotated",
+        "warning",
+        f"Node token rotated for {row['name']}",
+        {"nodeId": node_id},
+    )
+    return {"token": token}
+
+
 @router.patch("/nodes/{node_id}")
 async def patch_node(node_id: str, payload: NodePatch, request: Request, db: Database = Depends(get_db)) -> dict[str, Any]:
     row = db.query_one("SELECT * FROM nodes WHERE id = ?", (node_id,))

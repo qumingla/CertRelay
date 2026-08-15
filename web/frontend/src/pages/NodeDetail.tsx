@@ -2,13 +2,13 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
-import type { NodeDetailResponse, Domain } from "../types/api";
+import type { NodeDetailResponse, Domain, Settings as SettingsType } from "../types/api";
 import { Button } from "../components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "../components/ui/dialog";
-import { ArrowLeft, Play, Pencil, Activity, Download, Trash2 } from "lucide-react";
+import { ArrowLeft, Play, Pencil, Activity, Download, Trash2, TerminalSquare, Copy } from "lucide-react";
 import { format } from "date-fns";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -20,6 +20,8 @@ export function NodeDetail() {
   const queryClient = useQueryClient();
   const { t, formatRelative, statusLabel } = useI18n();
   const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isDeployCodeOpen, setIsDeployCodeOpen] = useState(false);
+  const [migrationToken, setMigrationToken] = useState<string | null>(null);
   const [pendingDeleteSelection, setPendingDeleteSelection] = useState<{ domainIds: string[]; domainNames: string[] } | null>(null);
   const [selectedDomainIds, setSelectedDomainIds] = useState<string[]>([]);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
@@ -34,6 +36,11 @@ export function NodeDetail() {
   const { data: domains = [] } = useQuery<Domain[]>({
     queryKey: ['domains'],
     queryFn: () => api.get<Domain[]>('/admin/domains'),
+  });
+
+  const { data: settings } = useQuery<SettingsType>({
+    queryKey: ['settings'],
+    queryFn: () => api.get<SettingsType>('/admin/settings'),
   });
 
   const allAssignedDomainIds = useMemo(
@@ -104,6 +111,15 @@ export function NodeDetail() {
     onError: (err: unknown) => toast.error((err as Error).message || t("nodeDetail.assignmentsFailed"))
   });
 
+  const rotateTokenMutation = useMutation({
+    mutationFn: () => api.post<{ token: string }>(`/admin/nodes/${id}/rotate-token`),
+    onSuccess: (result) => {
+      setMigrationToken(result.token);
+      toast.success(t("nodeDetail.migrationTokenRotated"));
+    },
+    onError: (err: unknown) => toast.error((err as Error).message || t("nodeDetail.migrationCodeFailed"))
+  });
+
   const form = useForm<{ domainIds: string[] }>({
     defaultValues: { domainIds: [] }
   });
@@ -156,7 +172,7 @@ export function NodeDetail() {
     setSelectedDomainIds(checked ? allAssignedDomainIds : []);
   };
 
-  const copyToClipboard = async (text: string) => {
+  const copyToClipboard = async (text: string, successMessage?: string) => {
     try {
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
@@ -175,9 +191,38 @@ export function NodeDetail() {
           throw new Error("execCommand copy failed");
         }
       }
-      toast.success(t("domains.shaCopied"));
+      toast.success(successMessage || t("domains.shaCopied"));
     } catch {
       toast.error(t("nodes.copyFailed"));
+    }
+  };
+
+  const shellQuote = (value: string) => `'${value.split("'").join(`'"'"'`)}'`;
+  const configuredPublicUrl = settings?.node.publicBaseUrl?.trim().replace(/\/+$/, "");
+  const publicBaseUrl = configuredPublicUrl || window.location.origin.replace(/\/+$/, "");
+  const manualUpdateCommand = [
+    "sudo bash -c '",
+    "  source /etc/default/cert-node",
+    '  MASTER="${MASTER_URL%/}"',
+    '  curl -fsSL "${MASTER}/api/agent.sh" | bash -s -- \\',
+    '    --token "${NODE_TOKEN}" \\',
+    '    --master-url "${MASTER}" \\',
+    '    --cert-dir "${CERT_BASE_DIR:-/etc/nginx/ssl}" \\',
+    '    --preserve-config',
+    "'",
+  ].join("\n");
+  const migrationCommand = migrationToken
+    ? [
+        `curl -fsSL ${publicBaseUrl}/api/agent.sh | sudo bash -s -- \\`,
+        `  --token ${shellQuote(migrationToken)} \\`,
+        `  --master-url ${shellQuote(publicBaseUrl)} \\`,
+        `  --cert-dir ${shellQuote(node.certDir)}`,
+      ].join("\n")
+    : "";
+
+  const generateMigrationCode = () => {
+    if (window.confirm(t("nodeDetail.rotateTokenWarning"))) {
+      rotateTokenMutation.mutate();
     }
   };
 
@@ -211,6 +256,9 @@ export function NodeDetail() {
           <Badge variant={node.isOnline ? 'default' : 'destructive'} className="text-sm px-3 py-1">
             {node.isOnline ? t("status.online") : t("status.offline")}
           </Badge>
+          <Button variant="outline" className="w-full sm:w-auto" onClick={() => setIsDeployCodeOpen(true)}>
+            <TerminalSquare className="mr-2 h-4 w-4" /> {t("nodeDetail.deployCode")}
+          </Button>
           <Button className="w-full sm:w-auto" onClick={() => runNowMutation.mutate()} disabled={runNowMutation.isPending || !node.isOnline}>
             <Play className="mr-2 h-4 w-4" /> {t("nodeDetail.runNow")}
           </Button>
@@ -440,6 +488,50 @@ export function NodeDetail() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isDeployCodeOpen} onOpenChange={(open) => {
+        setIsDeployCodeOpen(open);
+        if (!open) setMigrationToken(null);
+      }}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t("nodeDetail.deployCodeTitle")}</DialogTitle>
+            <DialogDescription>{t("nodeDetail.deployCodeDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-5 py-2">
+            <div className="rounded-lg border p-4 space-y-3">
+              <div>
+                <h3 className="font-medium">{t("nodeDetail.manualUpdateTitle")}</h3>
+                <p className="text-sm text-muted-foreground mt-1">{t("nodeDetail.manualUpdateDescription")}</p>
+              </div>
+              <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs leading-5 whitespace-pre-wrap break-all">{manualUpdateCommand}</pre>
+              <Button variant="outline" size="sm" onClick={() => copyToClipboard(manualUpdateCommand, t("nodeDetail.commandCopied"))}>
+                <Copy className="mr-2 h-4 w-4" /> {t("nodeDetail.copyCommand")}
+              </Button>
+            </div>
+
+            <div className="rounded-lg border border-destructive/40 p-4 space-y-3">
+              <div>
+                <h3 className="font-medium">{t("nodeDetail.migrationTitle")}</h3>
+                <p className="text-sm text-muted-foreground mt-1">{t("nodeDetail.migrationDescription")}</p>
+              </div>
+              {migrationCommand ? (
+                <>
+                  <p className="text-sm text-destructive">{t("nodeDetail.migrationSecretWarning")}</p>
+                  <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs leading-5 whitespace-pre-wrap break-all">{migrationCommand}</pre>
+                  <Button variant="outline" size="sm" onClick={() => copyToClipboard(migrationCommand, t("nodeDetail.commandCopied"))}>
+                    <Copy className="mr-2 h-4 w-4" /> {t("nodeDetail.copyCommand")}
+                  </Button>
+                </>
+              ) : (
+                <Button variant="destructive" onClick={generateMigrationCode} disabled={rotateTokenMutation.isPending}>
+                  {rotateTokenMutation.isPending ? t("nodeDetail.generatingMigrationCode") : t("nodeDetail.generateMigrationCode")}
+                </Button>
+              )}
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 
