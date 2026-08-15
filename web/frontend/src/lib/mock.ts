@@ -8,8 +8,8 @@ let domains: Domain[] = [
 ];
 
 let nodes: CertNode[] = [
-  { id: 'n1', name: 'web-node-01', ip: '192.168.1.10', isOnline: true, lastHeartbeatAt: new Date().toISOString(), certDir: '/etc/nginx/ssl', assignedDomainsCount: 2, lastError: null },
-  { id: 'n2', name: 'db-node-01', ip: '192.168.1.11', isOnline: false, lastHeartbeatAt: new Date(Date.now() - 86400000).toISOString(), certDir: '/etc/nginx/ssl', assignedDomainsCount: 1, lastError: 'Connection timeout' },
+  { id: 'n1', name: 'web-node-01', ip: '203.0.113.10', isOnline: true, lastHeartbeatAt: new Date().toISOString(), offlineAt: null, certDir: '/etc/nginx/ssl', assignedDomainsCount: 2, lastError: null },
+  { id: 'n2', name: 'db-node-01', ip: '203.0.113.11', isOnline: false, lastHeartbeatAt: new Date(Date.now() - 86400000).toISOString(), offlineAt: new Date(Date.now() - 86400000 + 750000).toISOString(), certDir: '/etc/nginx/ssl', assignedDomainsCount: 1, lastError: 'Connection timeout' },
 ];
 
 let nodeAssignments: NodeAssignment[] = [
@@ -415,6 +415,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
           certDir: body.certDir || '/etc/nginx/ssl',
           isOnline: false,
           lastHeartbeatAt: null,
+          offlineAt: null,
           assignedDomainsCount: 0,
           lastError: null,
         };
@@ -677,6 +678,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
         ip: node.ip,
         isOnline: node.isOnline,
         lastHeartbeatAt: node.lastHeartbeatAt,
+        offlineAt: null,
         certDir: node.certDir,
         assignedDomainsCount: nodeAssignments.filter((item) => item.nodeId === node.id).length,
         lastError: node.lastError,

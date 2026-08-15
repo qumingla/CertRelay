@@ -11,8 +11,16 @@ services:
       SSL_SYNC_SECRET_KEY: "${SSL_SYNC_SECRET_KEY:-change-me-before-production}"
       SSL_SYNC_ADMIN_USERNAME: "${SSL_SYNC_ADMIN_USERNAME:-admin}"
       SSL_SYNC_ADMIN_PASSWORD: "${SSL_SYNC_ADMIN_PASSWORD:-admin}"
+      SSL_SYNC_LOG_LEVEL: "${SSL_SYNC_LOG_LEVEL:-INFO}"
+      SSL_SYNC_NODE_HEARTBEAT_INTERVAL_SECONDS: "${SSL_SYNC_NODE_HEARTBEAT_INTERVAL_SECONDS:-150}"
+      SSL_SYNC_NODE_OFFLINE_MISSED_HEARTBEATS: "${SSL_SYNC_NODE_OFFLINE_MISSED_HEARTBEATS:-5}"
     volumes:
       - ./data:/var/lib/ssl-cert-sync
       - ./logs:/var/log/ssl-cert-sync
       - ./config:/etc/ssl-cert-sync
       - ${HOME}/.acme.sh:/root/.acme.sh
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"

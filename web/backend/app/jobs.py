@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 from uuid import uuid4
@@ -7,6 +8,9 @@ from uuid import uuid4
 from .db import Database
 from .events import EventHub
 from .timeutil import iso_now
+
+
+logger = logging.getLogger("ssl_sync.jobs")
 
 
 def create_job(
@@ -46,6 +50,9 @@ def append_log(db: Database, job_id: str, line: str) -> None:
         "UPDATE jobs SET log_text = ?, updated_at = ? WHERE id = ?",
         (f"{log_text}{line.rstrip()}\n", iso_now(), job_id),
     )
+    message = line.rstrip()
+    level = logging.ERROR if "[ERROR]" in message or "[FATAL]" in message else logging.WARNING if "[WARN]" in message else logging.INFO
+    logger.log(level, "job_id=%s %s", job_id, message)
 
 
 def finish_job(

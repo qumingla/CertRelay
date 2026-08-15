@@ -27,6 +27,7 @@ export function Nodes() {
   const { data: nodes = [], isLoading } = useQuery<CertNode[]>({
     queryKey: ['nodes'],
     queryFn: () => api.get('/admin/nodes'),
+    refetchInterval: 30000,
   });
   const { data: settings } = useQuery<SettingsType>({
     queryKey: ['settings'],
@@ -189,7 +190,7 @@ export function Nodes() {
                 <TableHead>{t("table.status")}</TableHead>
                 <TableHead>{t("table.certDirectory")}</TableHead>
                 <TableHead>{t("table.assigned")}</TableHead>
-                <TableHead>{t("table.lastOnline")}</TableHead>
+                <TableHead>{t("table.presenceTime")}</TableHead>
                 <TableHead className="w-[112px]"></TableHead>
               </TableRow>
             </TableHeader>
@@ -218,7 +219,13 @@ export function Nodes() {
                     <TableCell className="font-mono text-xs">{n.certDir}</TableCell>
                     <TableCell>{t("nodes.assignedDomains", { count: n.assignedDomainsCount })}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">
-                      {n.lastHeartbeatAt ? formatRelative(n.lastHeartbeatAt) : t("common.never")}
+                      {n.isOnline
+                        ? (n.lastHeartbeatAt
+                            ? t("nodes.lastHeartbeatAt", { time: formatRelative(n.lastHeartbeatAt) })
+                            : t("common.never"))
+                        : (n.offlineAt
+                            ? t("nodes.offlineSince", { time: formatRelative(n.offlineAt) })
+                            : t("common.never"))}
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-1">

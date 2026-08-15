@@ -128,7 +128,7 @@ export function Dashboard() {
                     <TableHead>{t("table.node")}</TableHead>
                     <TableHead>{t("table.ip")}</TableHead>
                     <TableHead>{t("table.status")}</TableHead>
-                    <TableHead className="text-right">{t("table.lastHeartbeat")}</TableHead>
+                    <TableHead className="text-right">{t("table.presenceTime")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -144,7 +144,9 @@ export function Dashboard() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right text-muted-foreground">
-                        {node.lastHeartbeatAt ? formatRelative(node.lastHeartbeatAt) : t("common.never")}
+                        {node.isOnline
+                          ? (node.lastHeartbeatAt ? formatRelative(node.lastHeartbeatAt) : t("common.never"))
+                          : (node.offlineAt ? t("nodes.offlineSince", { time: formatRelative(node.offlineAt) }) : t("common.never"))}
                       </TableCell>
                     </TableRow>
                   ))}
