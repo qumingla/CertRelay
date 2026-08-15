@@ -20,6 +20,8 @@ class AppConfig:
     frontend_dist: Path | None
     master_script: Path
     allow_origins: list[str]
+    node_heartbeat_interval_seconds: int
+    node_offline_missed_heartbeats: int
 
 
 def load_config() -> AppConfig:
@@ -59,6 +61,8 @@ def load_config() -> AppConfig:
         frontend_dist=frontend_dist,
         master_script=Path(os.getenv("SSL_SYNC_MASTER_SCRIPT", "/usr/local/bin/cert-master-sync.sh")).expanduser(),
         allow_origins=origins,
+        node_heartbeat_interval_seconds=max(1, int(os.getenv("SSL_SYNC_NODE_HEARTBEAT_INTERVAL_SECONDS", "150"))),
+        node_offline_missed_heartbeats=max(1, int(os.getenv("SSL_SYNC_NODE_OFFLINE_MISSED_HEARTBEATS", "5"))),
     )
 
 

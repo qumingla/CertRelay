@@ -37,6 +37,7 @@ export interface CertNode {
   ip: string;
   isOnline: boolean;
   lastHeartbeatAt: string | null;
+  offlineAt: string | null;
   certDir: string;
   assignedDomainsCount: number;
   lastError: string | null;

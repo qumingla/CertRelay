@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from .config import AppConfig
 from .db import Database, loads_object
+from .node_presence import node_presence
 from .timeutil import days_remaining
 
 
@@ -44,13 +46,23 @@ def public_dns_channel(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def public_node(db: Database, row: dict[str, Any]) -> dict[str, Any]:
+def public_node(
+    db: Database,
+    row: dict[str, Any],
+    config: AppConfig,
+) -> dict[str, Any]:
     count_row = db.query_one("SELECT COUNT(*) AS count FROM node_assignments WHERE node_id = ?", (row["id"],))
+    presence = node_presence(
+        row,
+        heartbeat_interval_seconds=config.node_heartbeat_interval_seconds,
+        missed_heartbeats=config.node_offline_missed_heartbeats,
+    )
     return {
         "id": row["id"],
         "name": row["name"],
         "ip": row.get("ip") or "",
-        "isOnline": bool(row.get("is_online")),
+        "isOnline": presence["isOnline"],
+        "offlineAt": presence["offlineAt"],
         "lastHeartbeatAt": row.get("last_heartbeat_at"),
         "certDir": row.get("cert_dir") or "/etc/nginx/ssl",
         "assignedDomainsCount": int(count_row["count"]) if count_row else 0,

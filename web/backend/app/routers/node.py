@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import ipaddress
+import logging
 import tarfile
 import time
 from pathlib import Path
@@ -23,6 +25,7 @@ from ..timeutil import iso_now
 
 router = APIRouter(prefix="/api/node/v1", tags=["node"])
 bootstrap_router = APIRouter(tags=["node"])
+logger = logging.getLogger("ssl_sync.node")
 
 
 @bootstrap_router.get("/api/agent.sh", include_in_schema=False)
@@ -45,8 +48,9 @@ async def heartbeat(
     db: Database = Depends(get_db),
     event_hub: EventHub = Depends(get_event_hub),
 ) -> dict[str, Any]:
-    client_host = request.client.host if request.client else ""
-    ip = payload.ip or client_host or node.get("ip") or ""
+    reported_ip = _normalize_ip(payload.ip)
+    observed_ip = _observed_client_ip(request)
+    ip = reported_ip or observed_ip or node.get("ip") or ""
     cert_dir = payload.certDir or node.get("cert_dir") or "/etc/nginx/ssl"
     now = iso_now()
     db.execute(
@@ -62,6 +66,14 @@ async def heartbeat(
         "info",
         f"Heartbeat received from {node['name']}",
         {"nodeId": node["id"], "ip": ip, "version": payload.version},
+    )
+    logger.info(
+        "node heartbeat node_id=%s node=%s ip=%s source=%s version=%s",
+        node["id"],
+        node["name"],
+        ip or "unknown",
+        "reported" if reported_ip else "observed",
+        payload.version or "unknown",
     )
     return {"success": True, "serverTime": now}
 
@@ -287,6 +299,42 @@ def _node_asset_dir() -> Path:
     return Path.cwd()
 
 
+def _normalize_ip(value: str | None) -> str:
+    candidate = str(value or "").strip().strip('"')
+    if not candidate or candidate.lower() == "unknown":
+        return ""
+    if candidate.startswith("[") and "]" in candidate:
+        candidate = candidate[1:candidate.index("]")]
+    elif candidate.count(":") == 1 and "." in candidate:
+        host, port = candidate.rsplit(":", 1)
+        if port.isdigit():
+            candidate = host
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return ""
+
+
+def _observed_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("forwarded", "")
+    if forwarded:
+        for part in forwarded.split(",", 1)[0].split(";"):
+            key, separator, value = part.strip().partition("=")
+            if separator and key.lower() == "for":
+                normalized = _normalize_ip(value)
+                if normalized:
+                    return normalized
+
+    for header_name in ("x-forwarded-for", "x-real-ip"):
+        raw_value = request.headers.get(header_name, "")
+        if raw_value:
+            normalized = _normalize_ip(raw_value.split(",", 1)[0])
+            if normalized:
+                return normalized
+
+    return _normalize_ip(request.client.host if request.client else "")
+
+
 def _resolve_public_base_url(request: Request, db: Database) -> str:
     settings_row = db.query_one("SELECT value FROM app_settings WHERE key = 'settings'")
     settings = merged_settings(settings_row["value"] if settings_row else "{}")
@@ -393,6 +441,8 @@ SERVICE_TEST_CMD='nginx -t'
 SERVICE_RELOAD_CMD='systemctl reload nginx'
 LOG_FILE='/var/log/cert-node-pull.log'
 NODE_NAME='$(hostname -s)'
+NODE_IP=''
+NODE_IP_DETECT_URL='https://api.ipify.org'
 DOMAINS=()
 WEBDAV_URL=''
 WEBDAV_AUTH=''

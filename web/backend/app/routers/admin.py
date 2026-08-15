@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
 
+from ..config import AppConfig
 from ..db import Database, dumps, loads_object, merged_settings
 from ..deps import get_db, get_event_hub
 from ..events import EventHub
@@ -47,12 +48,12 @@ router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(re
 
 
 @router.get("/overview")
-async def overview(db: Database = Depends(get_db), event_hub: EventHub = Depends(get_event_hub)) -> dict[str, Any]:
+async def overview(request: Request, db: Database = Depends(get_db), event_hub: EventHub = Depends(get_event_hub)) -> dict[str, Any]:
     domain_rows = db.query_all("SELECT * FROM domains ORDER BY domain")
     node_rows = db.query_all("SELECT * FROM nodes ORDER BY name")
     jobs_failed = db.query_one("SELECT COUNT(*) AS count FROM jobs WHERE status = 'failed'")
     domains = [public_domain(row) for row in domain_rows]
-    nodes = [public_node(db, row) for row in node_rows]
+    nodes = [public_node(db, row, request.app.state.config) for row in node_rows]
     return {
         "stats": {
             "onlineNodes": sum(1 for node in nodes if node["isOnline"]),
@@ -376,13 +377,13 @@ async def test_dns_channel(
 
 
 @router.get("/nodes")
-async def list_nodes(db: Database = Depends(get_db)) -> list[dict[str, Any]]:
+async def list_nodes(request: Request, db: Database = Depends(get_db)) -> list[dict[str, Any]]:
     rows = db.query_all("SELECT * FROM nodes ORDER BY name")
-    return [public_node(db, row) for row in rows]
+    return [public_node(db, row, request.app.state.config) for row in rows]
 
 
 @router.post("/nodes")
-async def create_node(payload: NodeCreate, db: Database = Depends(get_db)) -> dict[str, Any]:
+async def create_node(payload: NodeCreate, request: Request, db: Database = Depends(get_db)) -> dict[str, Any]:
     now = iso_now()
     node_id = f"n_{uuid4().hex}"
     token = new_node_token()
@@ -395,18 +396,18 @@ async def create_node(payload: NodeCreate, db: Database = Depends(get_db)) -> di
         """,
         (node_id, node_name, payload.ip, payload.certDir, hash_secret(token), now, now),
     )
-    node = _require_node(db, node_id)
+    node = _require_node(db, node_id, request.app.state.config)
     node["token"] = token
     return node
 
 
 @router.get("/nodes/{node_id}")
-async def get_node(node_id: str, db: Database = Depends(get_db), event_hub: EventHub = Depends(get_event_hub)) -> dict[str, Any]:
-    return _node_detail(db, event_hub, node_id)
+async def get_node(node_id: str, request: Request, db: Database = Depends(get_db), event_hub: EventHub = Depends(get_event_hub)) -> dict[str, Any]:
+    return _node_detail(db, event_hub, node_id, request.app.state.config)
 
 
 @router.patch("/nodes/{node_id}")
-async def patch_node(node_id: str, payload: NodePatch, db: Database = Depends(get_db)) -> dict[str, Any]:
+async def patch_node(node_id: str, payload: NodePatch, request: Request, db: Database = Depends(get_db)) -> dict[str, Any]:
     row = db.query_one("SELECT * FROM nodes WHERE id = ?", (node_id,))
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
@@ -424,7 +425,7 @@ async def patch_node(node_id: str, payload: NodePatch, db: Database = Depends(ge
         params.append(iso_now())
         params.append(node_id)
         db.execute(f"UPDATE nodes SET {', '.join(updates)} WHERE id = ?", params)
-    return _require_node(db, node_id)
+    return _require_node(db, node_id, request.app.state.config)
 
 
 @router.delete("/nodes/{node_id}")
@@ -437,6 +438,7 @@ async def delete_node(node_id: str, db: Database = Depends(get_db)) -> dict[str,
 async def update_node_assignments(
     node_id: str,
     payload: AssignmentUpdate,
+    request: Request,
     db: Database = Depends(get_db),
     event_hub: EventHub = Depends(get_event_hub),
 ) -> dict[str, Any]:
@@ -471,7 +473,7 @@ async def update_node_assignments(
         f"Assignments updated for {node['name']}",
         {"nodeId": node_id, "domainIds": payload.domainIds},
     )
-    return _node_detail(db, event_hub, node_id)
+    return _node_detail(db, event_hub, node_id, request.app.state.config)
 
 
 @router.post("/nodes/{node_id}/run-now")
@@ -968,14 +970,14 @@ def _require_dns_channel(db: Database, channel_id: str) -> dict[str, Any]:
     return public_dns_channel(row)
 
 
-def _require_node(db: Database, node_id: str) -> dict[str, Any]:
+def _require_node(db: Database, node_id: str, config: AppConfig) -> dict[str, Any]:
     row = db.query_one("SELECT * FROM nodes WHERE id = ?", (node_id,))
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
-    return public_node(db, row)
+    return public_node(db, row, config)
 
 
-def _node_detail(db: Database, event_hub: EventHub, node_id: str) -> dict[str, Any]:
+def _node_detail(db: Database, event_hub: EventHub, node_id: str, config: AppConfig) -> dict[str, Any]:
     row = db.query_one("SELECT * FROM nodes WHERE id = ?", (node_id,))
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
@@ -989,7 +991,7 @@ def _node_detail(db: Database, event_hub: EventHub, node_id: str) -> dict[str, A
         """,
         (node_id,),
     )
-    node = public_node(db, row)
+    node = public_node(db, row, config)
     node["assignments"] = [public_assignment(item) for item in assignment_rows]
     node["recentEvents"] = [
         event for event in event_hub.recent(50)

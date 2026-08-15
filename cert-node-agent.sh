@@ -16,7 +16,7 @@ CONFIG_FILE="/etc/default/cert-node"
 PULL_SCRIPT="/usr/local/bin/cert-node-pull.sh"
 TMP_ROOT="/tmp/ssl-node-agent"
 NODE_API_BASE_SUFFIX="/api/node/v1"
-AGENT_VERSION="2026.05.15"
+AGENT_VERSION="2026.08.15"
 
 usage() {
     cat >&2 <<'EOF'
@@ -73,6 +73,8 @@ LOG_FILE="${LOG_FILE:-/var/log/cert-node-pull.log}"
 SERVICE_TEST_CMD="${SERVICE_TEST_CMD:-nginx -t}"
 SERVICE_RELOAD_CMD="${SERVICE_RELOAD_CMD:-systemctl reload nginx}"
 NODE_NAME="${NODE_NAME:-$(hostname -s)}"
+NODE_IP="${NODE_IP:-}"
+NODE_IP_DETECT_URL="${NODE_IP_DETECT_URL:-https://api.ipify.org}"
 
 mkdir -p "$(dirname "${LOG_FILE}")"
 
@@ -139,18 +141,34 @@ curl_node_api() {
 }
 
 node_heartbeat() {
-    local body
-    body="$(python3 - "${AGENT_VERSION}" "${CERT_BASE_DIR}" <<'PY'
+    local body reported_ip
+    reported_ip="$(detect_node_ip)"
+    body="$(python3 - "${AGENT_VERSION}" "${CERT_BASE_DIR}" "${reported_ip}" <<'PY'
 import json, socket, sys
 print(json.dumps({
     "hostname": socket.gethostname(),
-    "ip": "",
+    "ip": sys.argv[3],
     "version": sys.argv[1],
     "certDir": sys.argv[2],
 }, ensure_ascii=False))
 PY
 )"
     curl_node_api "POST" "/heartbeat" "${body}" "${STATE_DIR}/heartbeat.json"
+}
+
+detect_node_ip() {
+    local candidate="${NODE_IP}"
+    if [[ -z "${candidate}" && -n "${NODE_IP_DETECT_URL}" ]]; then
+        candidate="$(curl -fsS -4 --max-time 4 "${NODE_IP_DETECT_URL}" 2>/dev/null || true)"
+    fi
+    python3 - "${candidate}" <<'PY'
+import ipaddress, sys
+candidate = sys.argv[1].strip()
+try:
+    print(ipaddress.ip_address(candidate))
+except ValueError:
+    print("")
+PY
 }
 
 load_assignments() {

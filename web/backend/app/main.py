@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +13,26 @@ from fastapi.staticfiles import StaticFiles
 from .config import load_config
 from .db import Database
 from .events import EventHub
+from .logging_config import configure_logging
 from .routers import admin, auth, node
+
+configure_logging()
+logger = logging.getLogger("ssl_sync.app")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    config = app.state.config
+    logger.info(
+        "service started db=%s log_dir=%s node_offline_after_seconds=%s",
+        config.db_path,
+        config.log_dir,
+        config.node_heartbeat_interval_seconds * config.node_offline_missed_heartbeats,
+    )
+    try:
+        yield
+    finally:
+        logger.info("service stopped")
 
 
 def create_app() -> FastAPI:
@@ -29,6 +51,7 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
+        lifespan=_lifespan,
     )
     app.state.config = config
     app.state.db = db

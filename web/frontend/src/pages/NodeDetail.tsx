@@ -28,6 +28,7 @@ export function NodeDetail() {
     queryKey: ['nodes', id],
     queryFn: () => api.get<NodeDetailResponse>(`/admin/nodes/${id}`),
     enabled: !!id,
+    refetchInterval: 30000,
   });
 
   const { data: domains = [] } = useQuery<Domain[]>({
@@ -231,6 +232,12 @@ export function NodeDetail() {
                 <p className="text-muted-foreground mb-1">{t("table.lastHeartbeat")}</p>
                 <p>{node.lastHeartbeatAt ? formatRelative(node.lastHeartbeatAt) : t("common.never")}</p>
               </div>
+              {!node.isOnline && (
+                <div>
+                  <p className="text-muted-foreground mb-1">{t("nodeDetail.offlineAt")}</p>
+                  <p>{node.offlineAt ? formatRelative(node.offlineAt) : t("common.never")}</p>
+                </div>
+              )}
               <div className="col-span-2">
                 <p className="text-muted-foreground mb-1">{t("nodeDetail.latestError")}</p>
                 {node.lastError ? (
