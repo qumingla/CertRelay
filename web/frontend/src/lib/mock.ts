@@ -1,6 +1,8 @@
 /* eslint-disable no-useless-escape */
 import type { CertNode, DnsChannel, Domain, Job, Settings, SystemEvent, NodeAssignment, NodeDetailResponse } from "../types/api";
 
+const LATEST_AGENT_VERSION = "2026.08.15.1";
+
 // In-memory Mock Store
 let domains: Domain[] = [
   { id: 'd1', domain: 'example.com', enabled: true, dnsChannelId: 'c1', expiresAt: new Date(Date.now() + 86400000 * 30).toISOString(), daysRemaining: 30, lastIssuedAt: new Date(Date.now() - 86400000 * 60).toISOString(), lastSyncAt: new Date().toISOString(), certSha256: 'a1b2c3d4e5f6', status: 'active' },
@@ -8,8 +10,8 @@ let domains: Domain[] = [
 ];
 
 let nodes: CertNode[] = [
-  { id: 'n1', name: 'web-node-01', ip: '203.0.113.10', isOnline: true, lastHeartbeatAt: new Date().toISOString(), offlineAt: null, certDir: '/etc/nginx/ssl', assignedDomainsCount: 2, lastError: null },
-  { id: 'n2', name: 'db-node-01', ip: '203.0.113.11', isOnline: false, lastHeartbeatAt: new Date(Date.now() - 86400000).toISOString(), offlineAt: new Date(Date.now() - 86400000 + 750000).toISOString(), certDir: '/etc/nginx/ssl', assignedDomainsCount: 1, lastError: 'Connection timeout' },
+  { id: 'n1', name: 'web-node-01', ip: '203.0.113.10', isOnline: true, lastHeartbeatAt: new Date().toISOString(), offlineAt: null, agentVersion: LATEST_AGENT_VERSION, latestAgentVersion: LATEST_AGENT_VERSION, updateAvailable: false, supportsSelfUpdate: true, certDir: '/etc/nginx/ssl', assignedDomainsCount: 2, lastError: null },
+  { id: 'n2', name: 'db-node-01', ip: '203.0.113.11', isOnline: false, lastHeartbeatAt: new Date(Date.now() - 86400000).toISOString(), offlineAt: new Date(Date.now() - 86400000 + 750000).toISOString(), agentVersion: '2026.05.15', latestAgentVersion: LATEST_AGENT_VERSION, updateAvailable: true, supportsSelfUpdate: false, certDir: '/etc/nginx/ssl', assignedDomainsCount: 1, lastError: 'Connection timeout' },
 ];
 
 let nodeAssignments: NodeAssignment[] = [
@@ -416,6 +418,10 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
           isOnline: false,
           lastHeartbeatAt: null,
           offlineAt: null,
+          agentVersion: null,
+          latestAgentVersion: LATEST_AGENT_VERSION,
+          updateAvailable: false,
+          supportsSelfUpdate: false,
           assignedDomainsCount: 0,
           lastError: null,
         };
@@ -508,6 +514,35 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
         }
       }, 2000);
       
+      return createResponse(newJob);
+    }
+
+    const nodeUpgradeMatch = url.match(/\/api\/admin\/nodes\/([^/]+)\/upgrade-agent$/);
+    if (nodeUpgradeMatch && method === 'POST') {
+      const id = nodeUpgradeMatch[1];
+      const node = nodes.find(n => n.id === id);
+      if (!node) return createResponse({ error: 'Node not found' }, 404);
+      const newJob: Job = {
+        id: `j${Date.now()}`,
+        type: 'upgrade',
+        targetId: id,
+        targetName: node.name,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        durationMs: null,
+        error: null
+      };
+      jobs.unshift(newJob);
+      setTimeout(() => {
+        node.agentVersion = LATEST_AGENT_VERSION;
+        node.latestAgentVersion = LATEST_AGENT_VERSION;
+        node.updateAvailable = false;
+        node.supportsSelfUpdate = true;
+        newJob.status = 'success';
+        newJob.endedAt = new Date().toISOString();
+        newJob.durationMs = 1800;
+      }, 1800);
       return createResponse(newJob);
     }
 
@@ -679,6 +714,10 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
         isOnline: node.isOnline,
         lastHeartbeatAt: node.lastHeartbeatAt,
         offlineAt: null,
+        agentVersion: null,
+        latestAgentVersion: LATEST_AGENT_VERSION,
+        updateAvailable: false,
+        supportsSelfUpdate: false,
         certDir: node.certDir,
         assignedDomainsCount: nodeAssignments.filter((item) => item.nodeId === node.id).length,
         lastError: node.lastError,

@@ -10,7 +10,7 @@ import { Card, CardContent } from "../components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Plus, Server, Trash, Copy, CheckCircle2, Globe, Folder, TerminalSquare, Pencil } from "lucide-react";
+import { Plus, Server, Trash, Copy, CheckCircle2, Globe, Folder, TerminalSquare, Pencil, ArrowUpCircle } from "lucide-react";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { useI18n } from "../components/LocaleProvider";
@@ -76,6 +76,16 @@ export function Nodes() {
       toast.success(t("nodes.deleted"));
     },
     onError: (err: unknown) => toast.error((err as Error).message || t("nodes.deleteFailed"))
+  });
+
+  const upgradeMutation = useMutation({
+    mutationFn: (id: string) => api.post(`/admin/nodes/${id}/upgrade-agent`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['nodes'] });
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      toast.success(t("nodes.upgradeQueued"));
+    },
+    onError: (err: unknown) => toast.error((err as Error).message || t("nodes.upgradeFailed"))
   });
 
   const onSubmit = (values: { name: string; certDir: string }) => {
@@ -182,23 +192,24 @@ export function Nodes() {
       <Card>
         <CardContent className="p-0">
           <div className="w-full overflow-x-auto">
-            <Table className="min-w-[720px]">
+            <Table className="min-w-[920px]">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("table.name")}</TableHead>
                 <TableHead>{t("table.ipAddress")}</TableHead>
+                <TableHead>{t("table.agentVersion")}</TableHead>
                 <TableHead>{t("table.status")}</TableHead>
                 <TableHead>{t("table.certDirectory")}</TableHead>
                 <TableHead>{t("table.assigned")}</TableHead>
                 <TableHead>{t("table.presenceTime")}</TableHead>
-                <TableHead className="w-[112px]"></TableHead>
+                <TableHead className="w-[152px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow><TableCell colSpan={7} className="text-center py-8">{t("common.loading")}</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="text-center py-8">{t("common.loading")}</TableCell></TableRow>
               ) : nodes.length === 0 ? (
-                <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">{t("nodes.empty")}</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">{t("nodes.empty")}</TableCell></TableRow>
               ) : (
                 nodes.map((n) => (
                   <TableRow key={n.id}>
@@ -210,6 +221,19 @@ export function Nodes() {
                     </TableCell>
                     <TableCell className="font-mono text-sm text-muted-foreground">
                       {n.ip || t("nodes.waitingHeartbeat")}
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-mono text-xs">{n.agentVersion || t("nodes.versionUnknown")}</div>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">
+                        {t("nodes.latestVersionValue", { version: n.latestAgentVersion })}
+                      </div>
+                      <Badge variant={n.updateAvailable ? 'secondary' : 'outline'} className="mt-1 text-[10px]">
+                        {!n.agentVersion
+                          ? t("nodes.versionUnknown")
+                          : n.updateAvailable
+                            ? (n.supportsSelfUpdate ? t("nodes.updateAvailable") : t("nodes.manualBootstrap"))
+                            : t("nodes.latestVersion")}
+                      </Badge>
                     </TableCell>
                     <TableCell>
                       <Badge variant={n.isOnline ? 'default' : 'destructive'}>
@@ -229,6 +253,15 @@ export function Nodes() {
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title={n.supportsSelfUpdate ? t("nodes.upgrade") : t("nodes.manualBootstrapHint")}
+                          disabled={!n.isOnline || !n.updateAvailable || !n.supportsSelfUpdate || (upgradeMutation.isPending && upgradeMutation.variables === n.id)}
+                          onClick={() => upgradeMutation.mutate(n.id)}
+                        >
+                          <ArrowUpCircle className={`h-4 w-4 ${n.updateAvailable ? 'text-primary' : ''}`} />
+                        </Button>
                         <Button variant="ghost" size="icon" onClick={() => openRenameDialog(n)}>
                           <Pencil className="h-4 w-4" />
                         </Button>
