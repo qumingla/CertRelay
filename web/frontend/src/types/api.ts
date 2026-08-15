@@ -38,6 +38,10 @@ export interface CertNode {
   isOnline: boolean;
   lastHeartbeatAt: string | null;
   offlineAt: string | null;
+  agentVersion: string | null;
+  latestAgentVersion: string;
+  updateAvailable: boolean;
+  supportsSelfUpdate: boolean;
   certDir: string;
   assignedDomainsCount: number;
   lastError: string | null;
@@ -71,7 +75,7 @@ export interface DnsChannel {
 
 export interface Job {
   id: string;
-  type: 'issue' | 'renew' | 'sync' | 'deploy' | 'delete' | 'test_dns';
+  type: 'issue' | 'renew' | 'sync' | 'deploy' | 'delete' | 'upgrade' | 'test_dns';
   targetId: string; // domainId, nodeId, etc.
   targetName?: string;
   status: 'running' | 'success' | 'failed' | 'pending';

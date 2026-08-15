@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .agent_release import agent_update_available, latest_agent_version, supports_self_update
 from .config import AppConfig
 from .db import Database, loads_object
 from .node_presence import node_presence
@@ -57,6 +58,8 @@ def public_node(
         heartbeat_interval_seconds=config.node_heartbeat_interval_seconds,
         missed_heartbeats=config.node_offline_missed_heartbeats,
     )
+    agent_version = str(row.get("agent_version") or "")
+    latest_version = latest_agent_version()
     return {
         "id": row["id"],
         "name": row["name"],
@@ -64,6 +67,10 @@ def public_node(
         "isOnline": presence["isOnline"],
         "offlineAt": presence["offlineAt"],
         "lastHeartbeatAt": row.get("last_heartbeat_at"),
+        "agentVersion": agent_version or None,
+        "latestAgentVersion": latest_version,
+        "updateAvailable": bool(agent_version and agent_update_available(agent_version)),
+        "supportsSelfUpdate": supports_self_update(agent_version),
         "certDir": row.get("cert_dir") or "/etc/nginx/ssl",
         "assignedDomainsCount": int(count_row["count"]) if count_row else 0,
         "lastError": row.get("last_error"),

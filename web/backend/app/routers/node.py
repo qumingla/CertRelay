@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse, Response
 
+from ..agent_release import build_agent_bundle, latest_agent_version, node_asset_dir
 from ..db import Database, loads_object, merged_settings
 from ..deps import get_db, get_event_hub
 from ..events import EventHub
@@ -56,10 +57,11 @@ async def heartbeat(
     db.execute(
         """
         UPDATE nodes
-        SET ip = ?, cert_dir = ?, is_online = 1, last_heartbeat_at = ?, updated_at = ?
+        SET ip = ?, cert_dir = ?, is_online = 1, last_heartbeat_at = ?,
+            agent_version = COALESCE(NULLIF(?, ''), agent_version), updated_at = ?
         WHERE id = ?
         """,
-        (ip, cert_dir, now, now, node["id"]),
+        (ip, cert_dir, now, payload.version or "", now, node["id"]),
     )
     event_hub.publish(
         "node_heartbeat",
@@ -76,6 +78,16 @@ async def heartbeat(
         payload.version or "unknown",
     )
     return {"success": True, "serverTime": now}
+
+
+@router.get("/agent/bundle")
+async def agent_bundle(_node: dict[str, Any] = Depends(require_node)) -> Response:
+    version = latest_agent_version()
+    return Response(
+        content=build_agent_bundle(),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="cert-node-agent-{version}.tar.gz"'},
+    )
 
 
 @router.get("/assignments")
@@ -267,6 +279,15 @@ async def ack_command(
         (command_status, now, now, payload.error, now, command_id),
     )
 
+    if row.get("type") == "upgrade_agent" and payload.status != "failed":
+        command_payload = loads_object(row.get("payload_json"))
+        target_version = str(command_payload.get("targetVersion") or "").strip()
+        if target_version:
+            db.execute(
+                "UPDATE nodes SET agent_version = ?, last_error = NULL, updated_at = ? WHERE id = ?",
+                (target_version, now, node["id"]),
+            )
+
     if row.get("job_id"):
         job = db.query_one("SELECT status FROM jobs WHERE id = ?", (row["job_id"],))
         if job and job.get("status") == "running":
@@ -289,14 +310,7 @@ async def ack_command(
 
 
 def _node_asset_dir() -> Path:
-    bundled = Path("/opt/ssl-sync-node")
-    if bundled.exists():
-        return bundled
-
-    parents = Path(__file__).resolve().parents
-    if len(parents) >= 5:
-        return parents[4]
-    return Path.cwd()
+    return node_asset_dir()
 
 
 def _normalize_ip(value: str | None) -> str:
@@ -403,7 +417,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl openssl python3
+apt-get install -y -qq curl openssl python3 tar
 
 mkdir -p /usr/local/bin /etc/default /etc/systemd/system /var/log
 install -d -m 700 "${{CERT_DIR}}"
@@ -509,7 +523,12 @@ async def _notify_node_command_result(
     else:
         domain_list = ""
 
-    action_label = "节点证书删除" if command_row.get("type") == "delete_domains" else "节点证书下发"
+    if command_row.get("type") == "delete_domains":
+        action_label = "节点证书删除"
+    elif command_row.get("type") == "upgrade_agent":
+        action_label = "节点 Agent 升级"
+    else:
+        action_label = "节点证书下发"
     success = payload.status != "failed"
     title = f"{'✅' if success else '🚨'} [NODE] {node['name']} {action_label}{'完成' if success else '失败'}"
     body_parts: list[str] = []

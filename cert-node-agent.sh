@@ -16,7 +16,7 @@ CONFIG_FILE="/etc/default/cert-node"
 PULL_SCRIPT="/usr/local/bin/cert-node-pull.sh"
 TMP_ROOT="/tmp/ssl-node-agent"
 NODE_API_BASE_SUFFIX="/api/node/v1"
-AGENT_VERSION="2026.08.15"
+AGENT_VERSION="2026.08.15.1"
 
 usage() {
     cat >&2 <<'EOF'
@@ -226,7 +226,8 @@ for item in data.get("commands", []):
     print("\t".join([
         item.get("id") or "",
         item.get("type") or "",
-        ",".join(domain_ids),
+        ",".join(domain_ids) or "-",
+        str(payload.get("targetVersion") or ""),
     ]))
 PY
 )
@@ -530,6 +531,107 @@ process_delete_command() {
     [[ "${ack_status}" == "completed" ]]
 }
 
+process_upgrade_command() {
+    local command_id="$1"
+    local target_version="$2"
+    local upgrade_dir="${STATE_DIR}/agent-upgrade"
+    local bundle_file="${upgrade_dir}/agent-bundle.tar.gz"
+    local http_code curl_status=0 actual_version
+
+    install -d -m 700 "${upgrade_dir}"
+    log "INFO" "开始升级 Node Agent: ${AGENT_VERSION} -> ${target_version:-latest}"
+    http_code="$(curl -sS -L -o "${bundle_file}" -w "%{http_code}" \
+        --max-time 120 --retry 3 --retry-delay 3 --retry-connrefused \
+        -H "Authorization: Bearer ${NODE_TOKEN}" \
+        "${NODE_API_BASE}/agent/bundle")" || curl_status=$?
+    if [[ ${curl_status} -ne 0 || "${http_code}" != "200" ]]; then
+        local error="Agent upgrade bundle download failed (curl ${curl_status}, HTTP ${http_code:-000})."
+        log "ERROR" "${error}"
+        ack_command_single "${command_id}" "failed" "${error}"
+        return 1
+    fi
+
+    if ! tar -xzf "${bundle_file}" -C "${upgrade_dir}"; then
+        local error="Agent upgrade bundle extraction failed."
+        log "ERROR" "${error}"
+        ack_command_single "${command_id}" "failed" "${error}"
+        return 1
+    fi
+
+    if ! actual_version="$(python3 - "${upgrade_dir}" "${target_version}" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+expected_version = sys.argv[2]
+manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+version = str(manifest.get("version") or "")
+if not version or (expected_version and version != expected_version):
+    raise SystemExit("upgrade version mismatch")
+files = manifest.get("files") or {}
+required = {"cert-node-agent.sh", "cert-node-pull.sh", "cert-puller.service", "cert-puller.timer"}
+if set(files) != required:
+    raise SystemExit("upgrade manifest file list mismatch")
+for name, metadata in files.items():
+    path = root / name
+    if not path.is_file():
+        raise SystemExit(f"missing upgrade file: {name}")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != str((metadata or {}).get("sha256") or ""):
+        raise SystemExit(f"checksum mismatch: {name}")
+print(version)
+PY
+)"; then
+        local error="Agent upgrade bundle verification failed."
+        log "ERROR" "${error}"
+        ack_command_single "${command_id}" "failed" "${error}"
+        return 1
+    fi
+
+    if ! bash -n "${upgrade_dir}/cert-node-agent.sh" || ! bash -n "${upgrade_dir}/cert-node-pull.sh"; then
+        local error="Agent upgrade script syntax validation failed."
+        log "ERROR" "${error}"
+        ack_command_single "${command_id}" "failed" "${error}"
+        return 1
+    fi
+
+    local backup_dir="/var/backups/cert-node-agent/$(date '+%Y%m%d_%H%M%S')"
+    install -d -m 700 "${backup_dir}"
+    cp -a /usr/local/bin/cert-node-agent.sh /usr/local/bin/cert-node-pull.sh \
+        /etc/systemd/system/cert-puller.service /etc/systemd/system/cert-puller.timer \
+        "${backup_dir}/" 2>/dev/null || true
+
+    if ! install -m 750 "${upgrade_dir}/cert-node-agent.sh" /usr/local/bin/cert-node-agent.sh.new \
+        || ! install -m 750 "${upgrade_dir}/cert-node-pull.sh" /usr/local/bin/cert-node-pull.sh.new \
+        || ! install -m 644 "${upgrade_dir}/cert-puller.service" /etc/systemd/system/cert-puller.service.new \
+        || ! install -m 644 "${upgrade_dir}/cert-puller.timer" /etc/systemd/system/cert-puller.timer.new; then
+        local error="Unable to stage upgraded agent files."
+        log "ERROR" "${error}"
+        ack_command_single "${command_id}" "failed" "${error}"
+        return 1
+    fi
+    if ! mv -f /usr/local/bin/cert-node-agent.sh.new /usr/local/bin/cert-node-agent.sh \
+        || ! mv -f /usr/local/bin/cert-node-pull.sh.new /usr/local/bin/cert-node-pull.sh \
+        || ! mv -f /etc/systemd/system/cert-puller.service.new /etc/systemd/system/cert-puller.service \
+        || ! mv -f /etc/systemd/system/cert-puller.timer.new /etc/systemd/system/cert-puller.timer; then
+        local error="Unable to activate upgraded agent files. Backup: ${backup_dir}"
+        log "ERROR" "${error}"
+        ack_command_single "${command_id}" "failed" "${error}"
+        return 1
+    fi
+
+    if ! systemctl daemon-reload || ! systemctl restart cert-puller.timer; then
+        local error="Agent files were installed, but systemd reload failed. Check the node manually."
+        log "ERROR" "${error}"
+        ack_command_single "${command_id}" "failed" "${error}"
+        return 1
+    fi
+
+    local summary="Node Agent upgraded successfully: ${AGENT_VERSION} -> ${actual_version}. Backup: ${backup_dir}"
+    log "INFO" "${summary}"
+    ack_command_single "${command_id}" "completed" "" "${summary}"
+}
+
 main() {
     log "INFO" "开始 API 模式节点同步"
     node_heartbeat
@@ -548,9 +650,15 @@ main() {
     local overall_exit_code=0
     local row
     for row in "${COMMAND_ROWS[@]}"; do
-        local command_id command_type domain_ids_csv
-        IFS=$'\t' read -r command_id command_type domain_ids_csv <<< "${row}"
+        local command_id command_type domain_ids_csv target_version
+        IFS=$'\t' read -r command_id command_type domain_ids_csv target_version <<< "${row}"
         [[ -n "${command_id}" ]] || continue
+        [[ "${domain_ids_csv}" == "-" ]] && domain_ids_csv=""
+
+        if [[ "${command_type}" == "upgrade_agent" ]]; then
+            process_upgrade_command "${command_id}" "${target_version}" || overall_exit_code=1
+            continue
+        fi
 
         local selected_domain_ids_csv="${domain_ids_csv}"
         if [[ "${command_type}" == "sync_all" ]]; then

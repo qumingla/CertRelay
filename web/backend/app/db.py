@@ -55,6 +55,7 @@ class Database:
     def init(self, admin_username: str = "admin", admin_password: str = "admin") -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            _migrate_schema(conn)
             existing = conn.execute("SELECT value FROM app_settings WHERE key = 'settings'").fetchone()
             if existing is None:
                 conn.execute(
@@ -170,6 +171,16 @@ def _merge_defaults(defaults: dict[str, Any], current: dict[str, Any]) -> dict[s
     return merged
 
 
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "nodes", "agent_version", "TEXT")
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
@@ -208,6 +219,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     ip TEXT NOT NULL DEFAULT '',
     is_online INTEGER NOT NULL DEFAULT 0,
     last_heartbeat_at TEXT,
+    agent_version TEXT,
     cert_dir TEXT NOT NULL DEFAULT '/etc/nginx/ssl',
     last_error TEXT,
     token_hash TEXT NOT NULL,

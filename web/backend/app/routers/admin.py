@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
 
+from ..agent_release import agent_update_available, latest_agent_version, supports_self_update
 from ..config import AppConfig
 from ..db import Database, dumps, loads_object, merged_settings
 from ..deps import get_db, get_event_hub
@@ -505,6 +506,15 @@ async def delete_node_domain_certs(
     return _queue_node_command(db, event_hub, node_id, "delete_domains", payload.domainIds)
 
 
+@router.post("/nodes/{node_id}/upgrade-agent")
+async def upgrade_node_agent(
+    node_id: str,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, Any]:
+    return _queue_node_upgrade(db, event_hub, node_id)
+
+
 @router.get("/jobs")
 async def list_jobs(db: Database = Depends(get_db)) -> list[dict[str, Any]]:
     rows = db.query_all("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 200")
@@ -945,6 +955,62 @@ def _queue_node_command(
         "info",
         f"Node command queued for {node_row['name']}",
         {"nodeId": node_id, "jobId": job["id"], "commandType": command_type, "domainIds": domain_ids},
+    )
+    return get_job(db, job["id"])
+
+
+def _queue_node_upgrade(db: Database, event_hub: EventHub, node_id: str) -> dict[str, Any]:
+    node_row = db.query_one("SELECT * FROM nodes WHERE id = ?", (node_id,))
+    if node_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
+
+    current_version = str(node_row.get("agent_version") or "")
+    target_version = latest_agent_version()
+    if not current_version:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "Node agent version is unknown. Wait for a heartbeat or bootstrap the agent manually."},
+        )
+    if not agent_update_available(current_version):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": "Node agent is already up to date"})
+    if not supports_self_update(current_version):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "This node agent is too old for one-click upgrades and requires one manual bootstrap update."},
+        )
+
+    pending = db.query_one(
+        "SELECT id FROM node_commands WHERE node_id = ? AND type = 'upgrade_agent' AND status = 'pending' LIMIT 1",
+        (node_id,),
+    )
+    if pending is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"error": "An agent upgrade is already queued"})
+
+    now = iso_now()
+    job = create_job(db, event_hub, "upgrade", node_id, node_row["name"])
+    append_log(db, job["id"], f"[INFO] Requested node agent upgrade: {current_version} -> {target_version}")
+    append_log(db, job["id"], "[INFO] Upgrade command queued for the node agent poller.")
+    command_id = f"cmd_{uuid4().hex}"
+    db.execute(
+        """
+        INSERT INTO node_commands
+            (id, node_id, job_id, type, payload_json, status, created_at, updated_at)
+        VALUES (?, ?, ?, 'upgrade_agent', ?, 'pending', ?, ?)
+        """,
+        (
+            command_id,
+            node_id,
+            job["id"],
+            dumps({"jobId": job["id"], "requestedAt": now, "source": "web", "targetVersion": target_version}),
+            now,
+            now,
+        ),
+    )
+    event_hub.publish(
+        "job_started",
+        "info",
+        f"Node agent upgrade queued for {node_row['name']}",
+        {"nodeId": node_id, "jobId": job["id"], "commandId": command_id, "targetVersion": target_version},
     )
     return get_job(db, job["id"])
 
