@@ -16,7 +16,7 @@ from ..agent_release import build_agent_bundle, latest_agent_version, node_asset
 from ..db import Database, loads_object, merged_settings
 from ..deps import get_db, get_event_hub
 from ..events import EventHub
-from ..jobs import append_log, finish_job
+from ..jobs import append_log, finish_job, recover_stale_jobs
 from ..live_ops import cleanup_bundle, extract_domain_bundle
 from ..schemas import NodeCommandAck, NodeHeartbeat, NodeReport
 from ..security import require_node
@@ -117,7 +117,12 @@ async def assignments(node: dict[str, Any] = Depends(require_node), db: Database
 
 
 @router.get("/commands")
-async def commands(node: dict[str, Any] = Depends(require_node), db: Database = Depends(get_db)) -> dict[str, Any]:
+async def commands(
+    node: dict[str, Any] = Depends(require_node),
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, Any]:
+    recover_stale_jobs(db, event_hub)
     rows = db.query_all(
         """
         SELECT * FROM node_commands
@@ -265,6 +270,7 @@ async def ack_command(
     db: Database = Depends(get_db),
     event_hub: EventHub = Depends(get_event_hub),
 ) -> dict[str, Any]:
+    recover_stale_jobs(db, event_hub)
     row = db.query_one("SELECT * FROM node_commands WHERE id = ? AND node_id = ?", (command_id, node["id"]))
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Command not found"})
@@ -274,14 +280,15 @@ async def ack_command(
 
     now = iso_now()
     command_status = "failed" if payload.status == "failed" else "completed"
-    db.execute(
-        """
+    with db.connect() as conn:
+        changed = conn.execute("""
         UPDATE node_commands
         SET status = ?, acked_at = ?, completed_at = ?, last_error = ?, updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND status = 'pending'
         """,
-        (command_status, now, now, payload.error, now, command_id),
-    )
+        (command_status, now, now, payload.error, now, command_id)).rowcount
+    if not changed:
+        return {"success": True, "nodeId": node["id"], "commandId": command_id}
 
     if row.get("type") == "upgrade_agent" and payload.status != "failed":
         command_payload = loads_object(row.get("payload_json"))
