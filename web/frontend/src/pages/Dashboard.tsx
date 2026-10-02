@@ -1,5 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { Button } from "../components/ui/button";
+import { Skeleton } from "../components/ui/skeleton";
 import { api } from "../lib/api";
 import { createEventStream } from "../lib/sse";
 import type { OverviewResponse, SystemEvent } from "../types/api";
@@ -10,8 +13,8 @@ import { Server, Globe, AlertTriangle, AlertCircle, Activity, Clock } from "luci
 import { useI18n } from "../components/LocaleProvider";
 
 export function Dashboard() {
-  const { t, formatRelative, statusLabel, eventTypeLabel } = useI18n();
-  const { data: overview, isLoading, error } = useQuery<OverviewResponse>({
+  const { language, t, formatRelative, statusLabel, eventTypeLabel } = useI18n();
+  const { data: overview, isLoading, error, refetch, isFetching } = useQuery<OverviewResponse>({
     queryKey: ['overview'],
     queryFn: () => api.get('/admin/overview'),
     refetchInterval: 30000,
@@ -22,6 +25,7 @@ export function Dashboard() {
   useEffect(() => {
     const es = createEventStream();
     es.onMessage((event) => {
+      if (event.payload?.heartbeat) return;
       setEvents((prev) => [event, ...prev].slice(0, 50));
     });
 
@@ -30,14 +34,27 @@ export function Dashboard() {
     };
   }, []);
 
-  if (isLoading) return <div className="p-8 text-muted-foreground">{t("dashboard.loading")}</div>;
+  if (isLoading) return <div className="p-6 space-y-6" role="status" aria-label={t("dashboard.loading")}><Skeleton className="h-20 w-full" /><div className="grid grid-cols-2 gap-4">{[0, 1, 2, 3].map(i => <Skeleton key={i} className="h-28" />)}</div><Skeleton className="h-80" /></div>;
   if (error) return <div className="p-8 text-destructive">{t("dashboard.loadFailed")}</div>;
   if (!overview) return null;
 
-  const { stats, certificates, nodes } = overview;
+  const { stats, certificates, nodes, automation } = overview;
+  const zh = language === "zh-CN";
+  const visibleEvents = [...new Map([...events, ...overview.recentEvents].map(event => [event.id, event])).values()]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50);
+  const urgentCertificates = [...certificates].sort((a, b) =>
+    Number(b.status === 'error') - Number(a.status === 'error') || (a.daysRemaining ?? 9999) - (b.daysRemaining ?? 9999));
 
   return (
     <div className="p-4 sm:p-6 w-full max-w-full overflow-x-hidden space-y-4 sm:space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div><p className="text-xs font-medium uppercase tracking-widest text-primary">SSL SYNC / OVERVIEW</p><h1 className="mt-2 text-2xl font-semibold tracking-tight">{zh ? '证书运行概览' : 'Certificate overview'}</h1><p className="mt-1 text-sm text-muted-foreground">{zh ? '集中查看证书有效期、节点状态与下发进度。' : 'Monitor certificate expiry, node health and deployments.'}</p></div>
+        <Button variant="outline" onClick={() => void refetch()} disabled={isFetching}>{t("common.refresh")}</Button>
+      </div>
+      {automation && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm">
+        <div className="flex items-start gap-3"><Activity className="mt-0.5 h-5 w-5 text-primary" /><div><p className="font-medium">{zh ? '自动续期与下发' : 'Automatic renewal & deployment'}</p><p className="mt-1 text-muted-foreground">{zh ? `每 ${automation.checkIntervalSeconds} 秒检查 · 到期前 ${automation.renewDays} 天续期 · ${automation.pendingDeployments} 项待下发 / 异常` : `Checks every ${automation.checkIntervalSeconds}s · Renew ${automation.renewDays} days before expiry · ${automation.pendingDeployments} pending / failed`}</p><p className="mt-1 text-xs text-muted-foreground">{automation.lastCheckAt ? `${zh ? '最近检查' : 'Last check'}: ${formatRelative(automation.lastCheckAt)}` : (zh ? '等待调度检查' : 'Waiting for scheduler')}</p></div></div>
+        <Link to="/jobs" className="font-medium text-primary hover:underline">{zh ? '查看执行日志 →' : 'View execution logs →'}</Link>
+      </div>}
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -86,7 +103,7 @@ export function Dashboard() {
             </CardHeader>
             <CardContent>
               <div className="w-full overflow-x-auto">
-                <Table className="min-w-[720px]">
+                <Table className="min-w-[480px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>{t("table.domain")}</TableHead>
@@ -98,7 +115,7 @@ export function Dashboard() {
                 <TableBody>
                   {certificates.length === 0 ? (
                     <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-4">{t("dashboard.noDomains")}</TableCell></TableRow>
-                  ) : certificates.slice(0, 5).map((cert) => (
+                  ) : urgentCertificates.slice(0, 5).map((cert) => (
                     <TableRow key={cert.id}>
                       <TableCell className="font-medium">{cert.domain}</TableCell>
                       <TableCell>
@@ -122,7 +139,7 @@ export function Dashboard() {
             </CardHeader>
             <CardContent>
               <div className="w-full overflow-x-auto">
-                <Table className="min-w-[720px]">
+                <Table className="min-w-[480px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>{t("table.node")}</TableHead>
@@ -167,10 +184,10 @@ export function Dashboard() {
             </CardHeader>
             <CardContent className="flex-1 overflow-y-auto max-h-[600px] pr-2">
               <div className="space-y-4">
-                {events.length === 0 ? (
+                {visibleEvents.length === 0 ? (
                   <div className="text-sm text-muted-foreground text-center py-8">{t("dashboard.waitingEvents")}</div>
                 ) : (
-                  events.map((evt) => (
+                  visibleEvents.map((evt) => (
                     <div key={evt.id} className="flex flex-col gap-1 border-b border-border/50 pb-3 last:border-0">
                       <div className="flex items-center justify-between">
                         <Badge variant={evt.level === 'error' ? 'destructive' : evt.level === 'warning' ? 'secondary' : 'outline'} className="text-[10px] px-1.5 py-0">
