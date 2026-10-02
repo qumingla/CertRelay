@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 from uuid import uuid4
 
 from .db import Database
 from .events import EventHub
-from .timeutil import iso_now
+from .timeutil import iso_now, parse_iso, utc_now
 
 
 logger = logging.getLogger("ssl_sync.jobs")
@@ -42,13 +41,9 @@ def create_job(
 
 
 def append_log(db: Database, job_id: str, line: str) -> None:
-    row = db.query_one("SELECT log_text FROM jobs WHERE id = ?", (job_id,))
-    if row is None:
-        return
-    log_text = row.get("log_text") or ""
     db.execute(
-        "UPDATE jobs SET log_text = ?, updated_at = ? WHERE id = ?",
-        (f"{log_text}{line.rstrip()}\n", iso_now(), job_id),
+        "UPDATE jobs SET log_text = COALESCE(log_text, '') || ?, updated_at = ? WHERE id = ?",
+        (line.rstrip() + "\n", iso_now(), job_id),
     )
     message = line.rstrip()
     level = logging.ERROR if "[ERROR]" in message or "[FATAL]" in message else logging.WARNING if "[WARN]" in message else logging.INFO
@@ -69,8 +64,8 @@ def finish_job(
     duration_ms = None
     if started_at:
         try:
-            started_ts = time.mktime(time.strptime(started_at[:19], "%Y-%m-%dT%H:%M:%S"))
-            duration_ms = int((time.time() - started_ts) * 1000)
+            started = parse_iso(started_at)
+            duration_ms = max(0, int((utc_now() - started).total_seconds() * 1000)) if started else 0
         except ValueError:
             duration_ms = 0
     ended_at = iso_now()

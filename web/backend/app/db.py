@@ -47,13 +47,14 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     def init(self, admin_username: str = "admin", admin_password: str = "admin") -> None:
         with self.connect() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(SCHEMA)
             _migrate_schema(conn)
             existing = conn.execute("SELECT value FROM app_settings WHERE key = 'settings'").fetchone()
@@ -283,4 +284,12 @@ CREATE TABLE IF NOT EXISTS events (
     payload_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
+"""
+
+SCHEMA += """
+CREATE INDEX IF NOT EXISTS idx_jobs_target_created ON jobs(target_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_type ON jobs(status, type);
+CREATE INDEX IF NOT EXISTS idx_commands_node_status ON node_commands(node_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_assignments_domain ON node_assignments(domain_id);
+CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
 """

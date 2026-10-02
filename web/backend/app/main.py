@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -11,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import load_config
+from .scheduler import run_scheduler
 from .db import Database
 from .events import EventHub
 from .logging_config import configure_logging
@@ -29,9 +32,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         config.log_dir,
         config.node_heartbeat_interval_seconds * config.node_offline_missed_heartbeats,
     )
+    scheduler = asyncio.create_task(run_scheduler(app))
     try:
         yield
     finally:
+        scheduler.cancel()
+        with suppress(asyncio.CancelledError):
+            await scheduler
         logger.info("service stopped")
 
 
