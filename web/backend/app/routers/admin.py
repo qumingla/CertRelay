@@ -66,6 +66,12 @@ async def overview(request: Request, db: Database = Depends(get_db), event_hub: 
         "certificates": domains,
         "nodes": nodes,
         "recentEvents": event_hub.recent(20),
+        "automation": {
+            "checkIntervalSeconds": 30,
+            "renewDays": _settings(db)["acme"]["defaultRenewDays"],
+            "lastCheckAt": getattr(request.app.state, "scheduler_last_check", None),
+            "pendingDeployments": db.query_one("SELECT COUNT(*) AS count FROM node_assignments WHERE status IN ('pending', 'error')")["count"],
+        },
     }
 
 
@@ -156,14 +162,15 @@ async def run_domain_action(
     row = db.query_one("SELECT * FROM domains WHERE id = ?", (domain_id,))
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Domain not found"})
+    _ensure_acme_idle(db)
     job = create_job(db, event_hub, action, domain_id, row["domain"])
     append_log(db, job["id"], f"[INFO] Requested {action} for {row['domain']}")
     bundle = None
     try:
         if action == "sync":
-            bundle = extract_domain_bundle(request.app.state.config, _settings(db), row["domain"])
+            bundle = await asyncio.to_thread(extract_domain_bundle, request.app.state.config, _settings(db), row["domain"])
             append_log(db, job["id"], f"[INFO] Exported local certificate bundle for {row['domain']}")
-            upload_domain_bundle(_settings(db).get("webdav", {}), row["domain"], bundle)
+            await asyncio.to_thread(upload_domain_bundle, _settings(db).get("webdav", {}), row["domain"], bundle)
             append_log(db, job["id"], f"[INFO] Uploaded certificate bundle to WebDAV for {row['domain']}")
             update_domain_state(db, domain_id, bundle, mark_synced=True)
         else:
@@ -215,6 +222,7 @@ async def run_bulk_domain_action(
         if len(domain_names) > 3
         else ", ".join(domain_names)
     )
+    _ensure_acme_idle(db)
     job = create_job(db, event_hub, payload.action, "bulk", target_name)
     append_log(db, job["id"], f"[INFO] Requested bulk {payload.action} for {len(domain_names)} domains.")
     append_log(db, job["id"], f"[INFO] Domains: {', '.join(domain_names)}")
@@ -230,9 +238,9 @@ async def run_bulk_domain_action(
         append_log(db, job["id"], f"[INFO] ---- Processing {domain_name} ----")
         try:
             if payload.action == "sync":
-                bundle = extract_domain_bundle(request.app.state.config, _settings(db), domain_name)
+                bundle = await asyncio.to_thread(extract_domain_bundle, request.app.state.config, _settings(db), domain_name)
                 append_log(db, job["id"], f"[INFO] Exported local certificate bundle for {domain_name}")
-                upload_domain_bundle(_settings(db).get("webdav", {}), domain_name, bundle)
+                await asyncio.to_thread(upload_domain_bundle, _settings(db).get("webdav", {}), domain_name, bundle)
                 append_log(db, job["id"], f"[INFO] Uploaded certificate bundle to WebDAV for {domain_name}")
                 update_domain_state(db, domain_id, bundle, mark_synced=True)
                 sync_marks.append(domain_name)
@@ -353,6 +361,7 @@ async def test_dns_channel(
     channel = db.query_one("SELECT * FROM dns_channels WHERE id = ?", (channel_id,))
     if channel is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "DNS channel not found"})
+    _ensure_acme_idle(db)
     job = create_job(db, event_hub, "test_dns", channel_id, channel["name"])
     try:
         append_log(db, job["id"], f"[INFO] Running live DNS challenge test for channel {channel['name']}")
@@ -471,27 +480,24 @@ async def update_node_assignments(
     if node is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
     now = iso_now()
-    db.execute("DELETE FROM node_assignments WHERE node_id = ?", (node_id,))
-    for domain_id in payload.domainIds:
-        domain = db.query_one("SELECT * FROM domains WHERE id = ?", (domain_id,))
-        if domain is None:
-            continue
-        db.execute(
-            """
-            INSERT INTO node_assignments
-                (id, node_id, domain_id, desired_sha256, deployed_sha256, status, expires_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, NULL, 'pending', ?, ?, ?)
-            """,
-            (
-                f"a_{uuid4().hex}",
-                node_id,
-                domain_id,
-                domain.get("cert_sha256"),
-                domain.get("expires_at"),
-                now,
-                now,
-            ),
-        )
+    domain_ids = list(dict.fromkeys(payload.domainIds))
+    with db.connect() as conn:
+        for domain_id in domain_ids:
+            if conn.execute("SELECT id FROM domains WHERE id = ?", (domain_id,)).fetchone() is None:
+                raise HTTPException(status_code=400, detail={"error": f"Domain not found: {domain_id}"})
+        if domain_ids:
+            placeholders = ",".join("?" for _ in domain_ids)
+            conn.execute(f"DELETE FROM node_assignments WHERE node_id = ? AND domain_id NOT IN ({placeholders})", (node_id, *domain_ids))
+        else:
+            conn.execute("DELETE FROM node_assignments WHERE node_id = ?", (node_id,))
+        for domain_id in domain_ids:
+            conn.execute(
+                """INSERT INTO node_assignments
+                (id, node_id, domain_id, desired_sha256, status, expires_at, created_at, updated_at)
+                SELECT ?, ?, id, cert_sha256, 'pending', expires_at, ?, ? FROM domains WHERE id = ?
+                ON CONFLICT(node_id, domain_id) DO NOTHING""",
+                (f"a_{uuid4().hex}", node_id, now, now, domain_id),
+            )
     event_hub.publish(
         "job_finished",
         "success",
@@ -1088,3 +1094,8 @@ def _node_detail(db: Database, event_hub: EventHub, node_id: str, config: AppCon
         if event.get("payload", {}).get("nodeId") == node_id
     ][:10]
     return node
+
+
+def _ensure_acme_idle(db: Database) -> None:
+    if db.query_one("SELECT id FROM jobs WHERE status = 'running' AND type IN ('issue', 'renew', 'sync', 'test_dns') LIMIT 1"):
+        raise HTTPException(status_code=409, detail={"error": "A certificate operation is already running. Please wait for it to finish."})

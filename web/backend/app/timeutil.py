@@ -20,7 +20,8 @@ def parse_iso(value: str | None) -> datetime | None:
         return None
     normalized = value.replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(normalized)
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
     except ValueError:
         return None
 

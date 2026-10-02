@@ -167,7 +167,7 @@ async def certificate_bundle(
 
     bundle = None
     try:
-        bundle = extract_domain_bundle(config, settings, assigned_domain["domain"])
+        bundle = await asyncio.to_thread(extract_domain_bundle, config, settings, assigned_domain["domain"])
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
             _add_bytes_to_archive(archive, "fullchain.pem", bundle.chain_file.read_bytes())
@@ -203,7 +203,9 @@ async def report(
             """
             UPDATE node_assignments
             SET deployed_sha256 = ?,
-                status = ?,
+                status = CASE
+                    WHEN ? = 'synced' AND COALESCE(desired_sha256, '') <> COALESCE(?, '') THEN 'pending'
+                    ELSE ? END,
                 expires_at = ?,
                 last_error = ?,
                 last_deploy_at = CASE
@@ -217,6 +219,8 @@ async def report(
             WHERE node_id = ? AND domain_id = ?
             """,
             (
+                item.deployedSha256,
+                item.status,
                 item.deployedSha256,
                 item.status,
                 item.expiresAt,

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import os
+import signal
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -100,7 +102,7 @@ async def run_domain_script(
     if exit_code != 0:
         raise RuntimeError(_tail_output(output, fallback=f"cert-master-sync exited with code {exit_code}"))
 
-    return extract_domain_bundle(config, settings, domain["domain"])
+    return await asyncio.to_thread(extract_domain_bundle, config, settings, domain["domain"])
 
 
 async def test_dns_channel_live(
@@ -186,6 +188,7 @@ def extract_domain_bundle(config: AppConfig, settings: dict[str, Any], domain: s
             str(chain_file),
         ],
         check=False,
+        timeout=120,
         capture_output=True,
         text=True,
     )
@@ -258,24 +261,35 @@ def mark_domain_error(db: Database, domain_id: str, error_message: str) -> None:
 
 async def _run_process(args: list[str], *, line_logger: LogWriter | None = None) -> tuple[int, str]:
     process = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
     )
-    output_lines: list[str] = []
-
-    assert process.stdout is not None
-    while True:
-        raw_line = await process.stdout.readline()
-        if not raw_line:
-            break
-        line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
-        output_lines.append(line)
-        if line_logger is not None:
-            line_logger(line)
-
-    return_code = await process.wait()
-    return return_code, "\n".join(output_lines)
+    from collections import deque
+    output_lines: deque[str] = deque(maxlen=200)
+    try:
+        async with asyncio.timeout(1800):
+            assert process.stdout is not None
+            while raw_line := await process.stdout.readline():
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
+                output_lines.append(line)
+                if line_logger is not None:
+                    line_logger(line)
+            return_code = await process.wait()
+        return return_code, "\n".join(output_lines)
+    finally:
+        if process.returncode is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except TimeoutError:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await process.wait()
 
 
 def _settings(db: Database) -> dict[str, Any]:
@@ -347,6 +361,7 @@ def _read_certificate_expiry(chain_file: Path) -> str:
     completed = subprocess.run(
         ["openssl", "x509", "-noout", "-enddate", "-in", str(chain_file)],
         check=False,
+        timeout=120,
         capture_output=True,
         text=True,
     )

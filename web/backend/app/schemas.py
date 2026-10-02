@@ -91,7 +91,7 @@ class TelegramSettings(BaseModel):
 class AcmeSettings(BaseModel):
     acmeHome: str
     stagingBase: str
-    defaultRenewDays: int
+    defaultRenewDays: int = Field(ge=1, le=60)
     defaultCa: str = "letsencrypt"
     accountEmail: str = ""
 
