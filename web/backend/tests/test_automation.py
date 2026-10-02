@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, patch
 
 from app.db import Database, dumps, DEFAULT_SETTINGS
 from app.events import EventHub
-from app.jobs import create_job, finish_job
+from app.jobs import create_job, finish_job, recover_stale_jobs
 from app.live_ops import DomainBundle
-from app.scheduler import reconcile, queue_deployments
+from app.scheduler import reconcile, queue_deployments, run_scheduler
 from app.timeutil import iso_now, to_iso, utc_now
 
 
@@ -135,3 +135,119 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
         self.db.execute("UPDATE node_commands SET status = 'completed', completed_at = ?", (iso_now(),))
         queue_deployments(self.app)
         self.assertEqual(len(self.db.query_all('SELECT * FROM node_commands')), 1)
+
+    def queue_command(self, command_type='sync_domains'):
+        from app.routers.admin import _queue_node_command
+        job = _queue_node_command(self.db, self.hub, 'n', command_type, ['d'])
+        command = self.db.query_one('SELECT * FROM node_commands WHERE job_id = ?', (job['id'],))
+        return job, command
+
+    def age_command(self, command):
+        self.db.execute('UPDATE node_commands SET created_at = ? WHERE id = ?',
+                        (to_iso(utc_now() - timedelta(minutes=31)), command['id']))
+
+    async def test_expired_node_command_is_failed_and_not_delivered(self):
+        from app.routers.node import commands
+        job, command = self.queue_command()
+        self.age_command(command)
+        result = await commands({'id': 'n'}, self.db, self.hub)
+        self.assertEqual(result['commands'], [])
+        self.assertEqual(self.db.query_one('SELECT status FROM node_commands')['status'], 'failed')
+        row = self.db.query_one('SELECT * FROM jobs WHERE id = ?', (job['id'],))
+        self.assertEqual(row['status'], 'failed')
+        self.assertIsNotNone(row['ended_at'])
+        self.assertIn('30 分钟', row['log_text'])
+        self.assertIn('超时', row['error'])
+
+    async def test_late_ack_does_not_overwrite_timeout(self):
+        from app.routers.node import ack_command
+        from app.schemas import NodeCommandAck
+        job, command = self.queue_command()
+        self.age_command(command)
+        await ack_command(command['id'], NodeCommandAck(status='completed'),
+                          {'id': 'n', 'name': 'Node'}, self.db, self.hub)
+        self.assertEqual(self.db.query_one('SELECT status FROM node_commands')['status'], 'failed')
+        self.assertEqual(self.db.query_one('SELECT status FROM jobs WHERE id = ?', (job['id'],))['status'], 'failed')
+
+    async def test_recent_offline_command_keeps_waiting(self):
+        job, command = self.queue_command()
+        recover_stale_jobs(self.db, self.hub)
+        self.assertEqual(self.db.query_one('SELECT status FROM node_commands')['status'], 'pending')
+        self.assertEqual(self.db.query_one('SELECT status FROM jobs WHERE id = ?', (job['id'],))['status'], 'running')
+
+    async def test_on_time_ack_still_completes_normally(self):
+        from app.routers.node import ack_command
+        from app.schemas import NodeCommandAck
+        job, command = self.queue_command()
+        with patch('app.routers.node._notify_node_command_result', new_callable=AsyncMock):
+            await ack_command(command['id'], NodeCommandAck(status='completed', summary='done'),
+                              {'id': 'n', 'name': 'Node'}, self.db, self.hub)
+        self.assertEqual(self.db.query_one('SELECT status FROM node_commands')['status'], 'completed')
+        self.assertEqual(self.db.query_one('SELECT status FROM jobs WHERE id = ?', (job['id'],))['status'], 'success')
+
+    async def test_missing_command_closes_old_deployment(self):
+        job = create_job(self.db, self.hub, 'deploy', 'n')
+        self.db.execute('UPDATE jobs SET started_at = ? WHERE id = ?',
+                        (to_iso(utc_now() - timedelta(days=60)), job['id']))
+        recover_stale_jobs(self.db, self.hub)
+        self.assertEqual(self.db.query_one('SELECT status FROM jobs')['status'], 'failed')
+        self.assertIn('已丢失', self.db.query_one('SELECT error FROM jobs')['error'])
+
+    async def test_terminal_command_repairs_unfinished_job(self):
+        for command_status, expected in [('completed', 'success'), ('failed', 'failed')]:
+            with self.subTest(command_status=command_status):
+                job, command = self.queue_command()
+                self.db.execute('UPDATE node_commands SET status = ?, last_error = ? WHERE id = ?',
+                                (command_status, 'node failure' if expected == 'failed' else None, command['id']))
+                recover_stale_jobs(self.db, self.hub)
+                self.assertEqual(self.db.query_one('SELECT status FROM jobs WHERE id = ?', (job['id'],))['status'], expected)
+
+    async def test_delete_and_upgrade_commands_also_expire(self):
+        for job_type, command_type in [('delete', 'delete_domains'), ('upgrade', 'upgrade_agent')]:
+            with self.subTest(job_type=job_type):
+                job, command = self.queue_command('delete_domains')
+                self.db.execute('UPDATE jobs SET type = ? WHERE id = ?', (job_type, job['id']))
+                self.db.execute('UPDATE node_commands SET type = ? WHERE id = ?', (command_type, command['id']))
+                self.age_command(command)
+                recover_stale_jobs(self.db, self.hub)
+                self.assertEqual(self.db.query_one('SELECT status FROM jobs WHERE id = ?', (job['id'],))['status'], 'failed')
+
+    async def test_recent_log_does_not_extend_node_deadline(self):
+        job, command = self.queue_command()
+        self.age_command(command)
+        self.db.execute('UPDATE jobs SET updated_at = ? WHERE id = ?', (iso_now(), job['id']))
+        recover_stale_jobs(self.db, self.hub)
+        self.assertEqual(self.db.query_one('SELECT status FROM jobs WHERE id = ?', (job['id'],))['status'], 'failed')
+
+    async def test_finishing_is_idempotent(self):
+        job = create_job(self.db, self.hub, 'deploy', 'n')
+        finish_job(self.db, self.hub, job['id'], 'failed', 'timeout')
+        before = self.db.query_one('SELECT * FROM jobs WHERE id = ?', (job['id'],))
+        finish_job(self.db, self.hub, job['id'], 'success')
+        self.assertEqual(self.db.query_one('SELECT * FROM jobs WHERE id = ?', (job['id'],)), before)
+
+    async def test_watchdog_runs_while_renewal_is_busy(self):
+        self.app.state.config = SimpleNamespace(db_path=self.db.path)
+        job, command = self.queue_command()
+        renewal_started = asyncio.Event()
+        real_sleep = asyncio.sleep
+        ticks = 0
+
+        async def busy_renewal(app):
+            renewal_started.set()
+            await asyncio.Event().wait()
+
+        async def advance_tick(seconds):
+            nonlocal ticks
+            ticks += 1
+            if ticks == 1:
+                await real_sleep(0)
+                self.assertTrue(renewal_started.is_set())
+                self.age_command(command)
+            else:
+                raise asyncio.CancelledError
+
+        with patch('app.scheduler.reconcile', side_effect=busy_renewal), patch('app.scheduler.asyncio.sleep', side_effect=advance_tick):
+            with self.assertRaises(asyncio.CancelledError):
+                await run_scheduler(self.app)
+        self.assertEqual(self.db.query_one('SELECT status FROM jobs WHERE id = ?', (job['id'],))['status'], 'failed')

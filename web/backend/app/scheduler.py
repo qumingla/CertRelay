@@ -7,7 +7,7 @@ import logging
 from datetime import timedelta
 
 from .db import merged_settings
-from .jobs import append_log, create_job, finish_job
+from .jobs import append_log, create_job, finish_job, recover_stale_jobs
 from .live_ops import cleanup_bundle, mark_domain_error, run_domain_script, update_domain_state
 from .timeutil import iso_now, parse_iso, utc_now
 
@@ -16,12 +16,7 @@ logger = logging.getLogger("ssl_sync.scheduler")
 
 async def reconcile(app) -> None:
     db, hub = app.state.db, app.state.event_hub
-    # A killed worker can leave jobs marked running. Script execution is capped
-    # at 30 minutes; allow five extra minutes since its last progress update.
-    for stale in db.query_all("SELECT id, updated_at FROM jobs WHERE status = 'running' AND type IN ('issue', 'renew', 'sync', 'test_dns')"):
-        updated = parse_iso(stale["updated_at"])
-        if updated and updated < utc_now() - timedelta(minutes=35):
-            finish_job(db, hub, stale["id"], "failed", "Operation stopped reporting progress; recovered by scheduler")
+    recover_stale_jobs(db, hub)
     settings_row = db.query_one("SELECT value FROM app_settings WHERE key = 'settings'")
     settings = merged_settings(settings_row["value"] if settings_row else None)
     renew_days = int(settings["acme"]["defaultRenewDays"])
@@ -110,6 +105,8 @@ async def run_scheduler(app) -> None:
             while True:
                 try:
                     app.state.scheduler_last_check = iso_now()
+                    # Run the watchdog even while ACME renewal is still busy.
+                    recover_stale_jobs(app.state.db, app.state.event_hub)
                     queue_deployments(app)
                     if renewal is None or renewal.done():
                         if renewal is not None:
