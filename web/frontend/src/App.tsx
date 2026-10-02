@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { ThemeProvider } from "./components/ThemeProvider";
@@ -10,20 +11,21 @@ import { api } from "./lib/api";
 import type { AuthStatus } from "./types/api";
 
 // Pages
-import { Login } from "./pages/Login";
-import { Setup } from "./pages/Setup";
-import { Dashboard } from "./pages/Dashboard";
-import { Domains } from "./pages/Domains";
-import { Nodes } from "./pages/Nodes";
-import { NodeDetail } from "./pages/NodeDetail";
-import { DnsChannels } from "./pages/DnsChannels";
-import { Jobs } from "./pages/Jobs";
-import { Settings } from "./pages/Settings";
+const Login = lazy(() => import("./pages/Login").then(module => ({ default: module.Login })));
+const Setup = lazy(() => import("./pages/Setup").then(module => ({ default: module.Setup })));
+const Dashboard = lazy(() => import("./pages/Dashboard").then(module => ({ default: module.Dashboard })));
+const Domains = lazy(() => import("./pages/Domains").then(module => ({ default: module.Domains })));
+const Nodes = lazy(() => import("./pages/Nodes").then(module => ({ default: module.Nodes })));
+const NodeDetail = lazy(() => import("./pages/NodeDetail").then(module => ({ default: module.NodeDetail })));
+const DnsChannels = lazy(() => import("./pages/DnsChannels").then(module => ({ default: module.DnsChannels })));
+const Jobs = lazy(() => import("./pages/Jobs").then(module => ({ default: module.Jobs })));
+const Settings = lazy(() => import("./pages/Settings").then(module => ({ default: module.Settings })));
 
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
+      staleTime: 15000,
       retry: false,
       refetchOnWindowFocus: false,
     },
@@ -66,6 +68,7 @@ function AuthBootstrapGate() {
   }
 
   return (
+    <Suspense fallback={<div className="p-6 text-muted-foreground" role="status">{t("common.loading")}</div>}>
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/setup" element={<Setup />} />
@@ -80,6 +83,7 @@ function AuthBootstrapGate() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
+    </Suspense>
   );
 }
 

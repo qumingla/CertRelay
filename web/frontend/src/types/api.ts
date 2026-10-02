@@ -103,6 +103,7 @@ export interface DashboardStats {
 }
 
 export interface OverviewResponse {
+  automation?: { checkIntervalSeconds: number; renewDays: number; lastCheckAt: string | null; pendingDeployments: number };
   stats: DashboardStats;
   certificates: Domain[];
   nodes: CertNode[];
