@@ -1,6 +1,9 @@
-FROM node:22-alpine AS frontend
+# Includes the 2026-10-21 Node.js security fixes (Brotli, TLS, DNS).
+FROM node:22.23.4-alpine AS frontend
 WORKDIR /src/web/frontend
 COPY web/frontend/package*.json ./
+COPY web/frontend/.npmrc ./
+COPY web/frontend/scripts ./scripts
 RUN npm ci
 COPY web/frontend ./
 RUN npm run build
@@ -16,7 +19,7 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash curl git openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY web/backend/requirements.txt /app/requirements.txt
+COPY web/backend/requirements.txt web/backend/constraints.txt /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt
 RUN git clone --depth=1 https://github.com/acmesh-official/acme.sh.git /opt/acme.sh \
     && rm -rf /opt/acme.sh/.git \

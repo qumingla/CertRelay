@@ -90,12 +90,13 @@ def create_app() -> FastAPI:
 def _mount_frontend(app: FastAPI, dist_dir: Path | None) -> None:
     if dist_dir is None or not dist_dir.exists():
         return
+    dist_dir = dist_dir.resolve()
     assets = dist_dir / "assets"
-    if assets.exists():
+    if assets.is_dir() and assets.resolve().is_relative_to(dist_dir):
         app.mount("/assets", StaticFiles(directory=assets), name="frontend-assets")
 
-    index_html = dist_dir / "index.html"
-    if not index_html.exists():
+    index_html = (dist_dir / "index.html").resolve()
+    if not index_html.is_relative_to(dist_dir) or not index_html.is_file():
         return
 
     @app.get("/")
@@ -106,7 +107,14 @@ def _mount_frontend(app: FastAPI, dist_dir: Path | None) -> None:
     async def frontend_spa(path: str):
         if path.startswith("api/"):
             return JSONResponse(status_code=404, content={"error": "Not found"})
-        candidate = dist_dir / path
+        # Starlette has already URL-decoded path. Resolve both parent segments
+        # and symlinks before checking the boundary, including absolute paths.
+        try:
+            candidate = (dist_dir / path).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if not candidate.is_relative_to(dist_dir):
+            return JSONResponse(status_code=404, content={"error": "Not found"})
         if candidate.exists() and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(index_html)

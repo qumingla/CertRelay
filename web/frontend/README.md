@@ -41,6 +41,12 @@
 
 ## 开发模式
 
+使用 Node.js 22.23.4+、24.22.1+ 或 26.12.1+（分别限定在 22、24、26 主版本）。这些最低版本包含 2026-10-21 安全修复；安装、开发、构建和预览会拒绝较旧版本。
+
+使用 nvm 时，在本目录运行 `nvm install && nvm use`，再运行 `npm ci`。依赖升级后运行 `npm audit`、`node --test scripts/check-node-version.test.cjs`、`npm run lint` 和 `npm run build`。
+
+样式构建使用 Tailwind CSS 4 和 `@tailwindcss/postcss`，保留 `tailwind.config.js` 中的主题配置，动画由 `tw-animate-css` 提供。组件源码保留在 `src/components/ui`，运行和构建不依赖 shadcn CLI。
+
 ### Mock 模式
 
 ```bash

@@ -21,6 +21,8 @@
 
 ## 本地启动
 
+使用 Python 3.12。`requirements.txt` 自动加载 `constraints.txt` 中审计过的依赖版本；升级时一起更新版本约束并运行 `pip-audit -r requirements.txt`。
+
 ```bash
 cd web/backend
 python3 -m venv .venv
@@ -33,6 +35,15 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
 
 - `/api/docs`
 - `/api/redoc`
+
+本地回归测试（在后端虚拟环境中执行）：
+
+```bash
+pip install httpx==0.28.1
+python -m unittest discover -s tests -v
+```
+
+静态文件服务仅允许读取前端构建目录内的文件，拒绝编码的父目录路径、绝对路径及指向目录外的符号链接；前端 SPA 路由仍回退到 `index.html`。
 
 ## 首次安装与登录
 

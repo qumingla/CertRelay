@@ -144,6 +144,8 @@ journalctl -u cert-puller -f
 
 ### 前端
 
+需要 Node.js 22.23.4+、24.22.1+ 或 26.12.1+（限定在对应主版本，包含 2026-10-21 安全修复）。使用 nvm 可在 `web/frontend` 运行 `nvm install && nvm use`。
+
 ```bash
 cd web/frontend
 npm install
@@ -194,6 +196,15 @@ bash install.sh
 docker compose logs -f ssl-sync-master
 docker compose up -d --build
 ```
+
+安全更新后应重新构建并替换运行中的容器，使运行时、系统证书库和应用依赖更新生效：
+
+```bash
+docker compose build --pull --no-cache ssl-sync-master
+docker compose up -d --no-deps ssl-sync-master
+```
+
+前端构建阶段固定使用 Node.js 22.23.4；运行中的服务是 Python，生产镜像不包含 Node.js 或 PHP。项目里的 Node/节点指证书同步代理（Shell），不是 Node.js。
 
 ### Node
 
